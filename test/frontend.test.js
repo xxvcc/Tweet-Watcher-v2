@@ -164,8 +164,8 @@ function buildDocument() {
   const settings = add(body, 'settings', 'div', 'hidden');
   add(settings, 'settings-close', 'button'); add(settings, 'acct-list'); add(settings, 'btn-add-acct', 'button');
   for (const id of ['auth_token', 'ct0', 'tg_bot_token']) add(settings, id, 'input', 'secret');
-  add(settings, 'tg_chat_id', 'input'); add(settings, 'bird_path', 'input'); add(settings, 'bird-hint');
-  ['btn-detect-bird', 'btn-save', 'btn-test-bird', 'btn-test-tg', 'pw-toggle'].forEach((id) => add(settings, id, 'button'));
+  add(settings, 'tg_chat_id', 'input'); add(settings, 'collector-name'); add(settings, 'collector-hint');
+  ['btn-detect-collector', 'btn-save', 'btn-test-collector', 'btn-test-tg', 'pw-toggle'].forEach((id) => add(settings, id, 'button'));
   const pwForm = add(settings, 'pw-form', 'div', 'hidden');
   ['old_pw', 'new_pw', 'new_pw2'].forEach((id) => { const input = add(pwForm, id, 'input'); input.type = 'password'; });
   add(pwForm, 'btn-chpw', 'button');
@@ -216,7 +216,7 @@ async function loadApp(handler, options = {}) {
 }
 
 const baseConfig = (revision = 10, overrides = {}) => ({
-  bird_path: '/usr/local/bin/bird', tg_chat_id: '', accounts: [], birdOk: true,
+  tg_chat_id: '', accounts: [], collector: { name: 'twscrape', fixed: true },
   configRevision: revision,
   secrets: { hasAuthToken: true, hasCt0: true, hasTgBotToken: true },
   ...overrides,
@@ -235,7 +235,7 @@ test('runtime policy stays visible and disables collection and delivery controls
   }) });
   assert.equal(app.ids.get('live-text').textContent, '开发预览');
   assert.match(app.ids.get('runtime-notice').textContent, /采集.*发送已关闭/);
-  assert.equal(app.ids.get('btn-test-bird').disabled, true);
+  assert.equal(app.ids.get('btn-test-collector').disabled, true);
   assert.equal(app.ids.get('btn-test-tg').disabled, true);
   assert.equal(app.ids.get('btn-pause').classList.contains('hidden'), true);
   assert.equal(app.ids.get('btn-resume').classList.contains('hidden'), true);
@@ -244,7 +244,22 @@ test('runtime policy stays visible and disables collection and delivery controls
     runtime: { mode: 'legacy-live', collectionEnabled: true, deliveryEnabled: true },
   }) });
   assert.match(app.ids.get('runtime-notice').textContent, /旧版 Bird/);
-  assert.equal(app.ids.get('btn-test-bird').disabled, false);
+  assert.equal(app.ids.get('btn-test-collector').disabled, false);
+  assert.equal(app.ids.get('btn-test-tg').disabled, false);
+  assert.equal(app.ids.get('live-text').textContent, '运行中');
+  stream.listeners.status({ data: JSON.stringify({
+    running: false, paused: false, accounts: {},
+    runtime: { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false },
+  }) });
+  assert.match(app.ids.get('runtime-notice').textContent, /只读验证.*自动监控.*发送已关闭/);
+  assert.equal(app.ids.get('btn-test-collector').disabled, false);
+  assert.equal(app.ids.get('btn-test-tg').disabled, true);
+  assert.equal(app.ids.get('live-text').textContent, '只读验证');
+  stream.listeners.status({ data: JSON.stringify({
+    running: true, paused: false, accounts: {},
+    runtime: { mode: 'live', collectionEnabled: true, deliveryEnabled: true },
+  }) });
+  assert.match(app.ids.get('runtime-notice').textContent, /twscrape 自动采集/);
   assert.equal(app.ids.get('btn-test-tg').disabled, false);
   assert.equal(app.ids.get('live-text').textContent, '运行中');
 });
@@ -284,7 +299,7 @@ test('same-content remote revision preserves a local draft and advances its save
     if (url === 'api/config' && (!opts.method || opts.method === 'GET')) return response(config);
     if (url === 'api/config' && opts.method === 'POST') {
       posted = JSON.parse(opts.body);
-      config = baseConfig(12, { bird_path: posted.bird_path });
+      config = baseConfig(12, { tg_chat_id: posted.tg_chat_id });
       return response({ ok: true, warnings: [] });
     }
     throw new Error(`unexpected request: ${opts.method || 'GET'} ${url}`);
@@ -294,17 +309,17 @@ test('same-content remote revision preserves a local draft and advances its save
   assert.equal(posted, null, 'unchanged settings must not create a new revision');
 
   app.ids.get('btn-settings').onclick();
-  app.ids.get('bird_path').value = '/opt/custom/bird';
-  for (const fn of app.ids.get('settings').listeners.input) fn({ target: app.ids.get('bird_path') });
+  app.ids.get('tg_chat_id').value = '333';
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: app.ids.get('tg_chat_id') });
 
   config = baseConfig(11); // another tab performed a no-op save
   app.EventSource.instances[0].listeners.status({ data: JSON.stringify({ running: true, accounts: {}, configRevision: 11 }) });
   await settle();
-  assert.equal(app.ids.get('bird_path').value, '/opt/custom/bird');
+  assert.equal(app.ids.get('tg_chat_id').value, '333');
 
   await app.ids.get('btn-save').onclick();
   assert.equal(posted.config_revision, 11);
-  assert.equal(posted.bird_path, '/opt/custom/bird');
+  assert.equal(posted.tg_chat_id, '333');
 });
 
 test('an SSE revision received during save is reloaded after the save completes', async () => {
@@ -319,25 +334,25 @@ test('an SSE revision received during save is reloaded after the save completes'
       getCount++;
       if (getCount === 1) return response(baseConfig(10));
       if (getCount === 2) { staleGetStartedResolve(); return staleGet; }
-      return response(baseConfig(12, { bird_path: '/remote/bird' }));
+      return response(baseConfig(12, { tg_chat_id: '222' }));
     }
     if (url === 'api/config' && opts.method === 'POST') return response({ ok: true, warnings: [] });
     throw new Error(`unexpected request: ${opts.method || 'GET'} ${url}`);
   });
 
   app.ids.get('btn-settings').onclick();
-  app.ids.get('bird_path').value = '/local/bird';
-  for (const fn of app.ids.get('settings').listeners.input) fn({ target: app.ids.get('bird_path') });
+  app.ids.get('tg_chat_id').value = '111';
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: app.ids.get('tg_chat_id') });
   const saving = app.ids.get('btn-save').onclick();
   await staleGetStarted;
   app.EventSource.instances[0].listeners.status({
     data: JSON.stringify({ running: true, accounts: {}, configRevision: 12 }),
   });
-  resolveStaleGet(response(baseConfig(11, { bird_path: '/local/bird' })));
+  resolveStaleGet(response(baseConfig(11, { tg_chat_id: '111' })));
   await saving;
   await settle();
   assert.equal(getCount, 3);
-  assert.equal(app.ids.get('bird_path').value, '/remote/bird');
+  assert.equal(app.ids.get('tg_chat_id').value, '222');
 });
 
 test('a late save conflict reloads remote config after the settings drawer was closed', async () => {
@@ -352,7 +367,7 @@ test('a late save conflict reloads remote config after the settings drawer was c
       getCount++;
       return getCount === 1
         ? response(baseConfig(10))
-        : response(baseConfig(11, { bird_path: '/remote/bird' }));
+        : response(baseConfig(11, { tg_chat_id: '222' }));
     }
     if (url === 'api/config' && opts.method === 'POST') {
       saveStartedResolve();
@@ -362,9 +377,9 @@ test('a late save conflict reloads remote config after the settings drawer was c
   });
 
   app.ids.get('btn-settings').onclick();
-  app.ids.get('bird_path').value = '/local/bird';
+  app.ids.get('tg_chat_id').value = '111';
   for (const listener of app.ids.get('settings').listeners.input || []) {
-    listener({ target: app.ids.get('bird_path') });
+    listener({ target: app.ids.get('tg_chat_id') });
   }
   const saving = app.ids.get('btn-save').onclick();
   await saveStarted;
@@ -374,7 +389,7 @@ test('a late save conflict reloads remote config after the settings drawer was c
   await settle();
 
   assert.equal(getCount, 2);
-  assert.equal(app.ids.get('bird_path').value, '/remote/bird');
+  assert.equal(app.ids.get('tg_chat_id').value, '222');
 });
 
 test('a synchronous EventSource construction failure leaves a usable panel and schedules reconnect', async () => {
@@ -392,36 +407,36 @@ test('a synchronous EventSource construction failure leaves a usable panel and s
   assert.equal(app.timers.size, 1);
 });
 
-test('a late bird detection result cannot overwrite a reopened or manually edited form', async () => {
+test('a late collector detection result cannot overwrite a reopened form or its configuration', async () => {
   let resolveDetection;
   const pendingDetection = new Promise((resolve) => { resolveDetection = resolve; });
   const app = await loadApp(async (url, opts) => {
     if (url === 'api/session') return response({ hasPassword: true, authed: true });
     if (url === 'api/config') return response(baseConfig());
-    if (url === 'api/detect-bird' && opts.method === 'POST') return pendingDetection;
+    if (url === 'api/detect-collector' && opts.method === 'POST') return pendingDetection;
     throw new Error(`unexpected request: ${opts.method || 'GET'} ${url}`);
   });
   app.ids.get('btn-settings').onclick();
-  const detecting = app.ids.get('btn-detect-bird').onclick();
+  const detecting = app.ids.get('btn-detect-collector').onclick();
   app.ids.get('settings-close').onclick();
   app.ids.get('btn-settings').onclick();
-  app.ids.get('bird_path').value = '/manual/path/bird';
-  for (const fn of app.ids.get('settings').listeners.input) fn({ target: app.ids.get('bird_path') });
-  resolveDetection(response({ found: true, path: '/detected/path/bird', version: '1.0.0' }));
+  app.ids.get('tg_chat_id').value = '444';
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: app.ids.get('tg_chat_id') });
+  resolveDetection(response({ found: true, version: '1.0.0' }));
   await detecting;
-  assert.equal(app.ids.get('bird_path').value, '/manual/path/bird');
+  assert.equal(app.ids.get('tg_chat_id').value, '444');
 });
 
 test('configuration tests do not perform a no-op save', async () => {
   const app = await loadApp(async (url) => {
     if (url === 'api/session') return response({ hasPassword: true, authed: true });
     if (url === 'api/config') return response(baseConfig());
-    if (url === 'api/test/bird') return response({ ok: true, message: 'ok' });
+    if (url === 'api/test/collector') return response({ ok: true, message: 'ok' });
     throw new Error(`unexpected request: ${url}`);
   });
-  await app.ids.get('btn-test-bird').onclick();
+  await app.ids.get('btn-test-collector').onclick();
   assert.equal(app.requests.filter((r) => r.url === 'api/config' && r.opts.method === 'POST').length, 0);
-  assert.equal(app.requests.filter((r) => r.url === 'api/test/bird').length, 1);
+  assert.equal(app.requests.filter((r) => r.url === 'api/test/collector').length, 1);
 });
 
 test('successful first setup falls back to login mode if panel loading fails', async () => {

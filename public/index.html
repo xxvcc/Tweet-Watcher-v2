@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Tweet Watcher v2</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%A6%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=0.1.0-alpha.1">
+<link rel="stylesheet" href="style.css?v=0.1.0-beta.1">
 </head>
 <body>
 
@@ -87,7 +87,7 @@
         </div>
         <div id="acct-list"></div>
         <button class="btn-add" id="btn-add-acct" type="button">➕ 添加账号</button>
-        <div class="hint">条数=每次拉取的推文数；频率=多少秒查一次（≥30）。改完点下方“保存配置”，几秒内即时生效。</div>
+        <div class="hint">条数=每页请求条数，抓取会保留完整返回页；频率=自动监控间隔（≥30 秒）。修改后请保存；只读模式仅支持手动测试。</div>
       </div>
 
       <div class="section">
@@ -97,7 +97,7 @@
         <label for="ct0">ct0</label>
         <input type="text" class="secret" id="ct0" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="4096" placeholder="从浏览器 Cookie 获取">
         <div class="hint">F12 → Application → Cookies → x.com。已保存的留空即保持不变。</div>
-        <button class="btn-ghost btn-sm" id="btn-test-bird" type="button">🧪 测试 Twitter 拉取</button>
+        <button class="btn-ghost btn-sm" id="btn-test-collector" type="button">🧪 测试 X 采集</button>
       </div>
 
       <div class="section">
@@ -117,12 +117,12 @@
 
       <div class="section">
         <h3>其他</h3>
-        <label for="bird_path">采集程序</label>
-        <input type="text" id="bird_path" readonly aria-readonly="true" autocomplete="off" spellcheck="false">
+        <label>采集程序</label>
+        <div id="collector-name" class="hint">twscrape</div>
         <div class="inline-actions">
-          <button class="btn-ghost btn-sm" id="btn-detect-bird" type="button">🔍 检查安装</button>
+          <button class="btn-ghost btn-sm" id="btn-detect-collector" type="button">🔍 检查安装</button>
         </div>
-        <div class="hint" id="bird-hint">当前保留旧版 Bird 用于兼容验证；twscrape 正在开发。可检查本地依赖是否完整。</div>
+        <div class="hint" id="collector-hint">采集器由服务器固定部署。点击“检查安装”确认环境，或测试已保存的 X Cookie。</div>
       </div>
 
       <button class="btn-primary btn-full" id="btn-save" type="button">💾 保存配置</button>
@@ -145,6 +145,6 @@
   </div>
 </div>
 
-<script src="app.js?v=0.1.0-alpha.1"></script>
+<script src="app.js?v=0.1.0-beta.1"></script>
 </body>
 </html>

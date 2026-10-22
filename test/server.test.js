@@ -130,10 +130,11 @@ test('panel entrypoint keeps assets relative for reverse-proxy subpaths', async 
   const response = await fetch(`${base}/`);
   const html = await response.text();
   assert.equal(response.status, 200);
-  assert.match(html, /href="style\.css\?v=0\.1\.0-alpha\.1"/);
-  assert.match(html, /src="app\.js\?v=0\.1\.0-alpha\.1"/);
+  const version = require('../package.json').version;
+  assert.ok(html.includes(`href="style.css?v=${version}"`));
+  assert.ok(html.includes(`src="app.js?v=${version}"`));
 
-  const script = await fetch(`${base}/app.js?v=0.1.0-alpha.1`);
+  const script = await fetch(`${base}/app.js?v=${version}`);
   assert.match(script.headers.get('content-type') || '', /javascript/);
 });
 

@@ -3,7 +3,7 @@
 // A fixed, checked-in runner: no user-selected executable or CLI config loading.
 const fs = require('node:fs');
 async function main() {
-  const blocked = require('../lib/runtime').blocked();
+  const blocked = require('../lib/runtime').blocked('legacy');
   if (blocked) {
     fs.writeSync(2, blocked.message);
     process.exitCode = 1;

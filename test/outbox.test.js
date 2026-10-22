@@ -179,3 +179,99 @@ test('legacy casing variants merge safely and preserve the highest ID even beyon
   box.prune(new Set(['Alice']));
   assert.equal(box.get('alice').pending[0].id, '9002');
 });
+
+test('complete long-form text and relationship IDs survive durable storage and restart', () => {
+  const { box, store, files } = harness();
+  box.baseline('alice', ['1']);
+  const text = '中文😀'.repeat(15000);
+  const relations = { replyToId: '9007199254740993', quoteId: '3', repostId: null,
+    editIds: Array.from({ length: 100 }, (_, i) => String(i + 2)) };
+  box.capture('alice', [{ id: '101', text, relations }], BINDING, null);
+  const restarted = createOutbox(store, 200);
+  restarted.flush();
+  const post = restarted.get('alice').pending[0];
+  assert.equal(post.text, text);
+  assert.deepEqual(post.relations, relations);
+  const message = require('../lib/telegram').formatTweet(post, 'alice');
+  assert.ok(message.length <= 4096);
+  assert.match(message, /内容已截断/);
+  const before = structuredClone(files.get('delivery_state.json'));
+  assert.throws(() => restarted.capture('alice', tweets(102, 100, text), BINDING, null), { code: 'OUTBOX_FULL' });
+  assert.deepEqual(files.get('delivery_state.json'), before);
+  assert.equal(restarted.get('alice').watermark, '101');
+});
+
+test('malformed persisted relation IDs fail closed on restart', () => {
+  for (const relations of [
+    { replyToId: 9007199254740993, quoteId: null, repostId: null, editIds: [] },
+    { replyToId: null, quoteId: 'invalid', repostId: null, editIds: [] },
+    { replyToId: null, quoteId: null, repostId: null, editIds: ['2', '2'] },
+    { replyToId: null, quoteId: null, repostId: null, editIds: [2] },
+  ]) {
+    const { box, store, files, writes } = harness();
+    box.baseline('alice', ['1']);
+    box.capture('alice', [{ id: '2' }], BINDING, null);
+    files.get('delivery_state.json').accounts.alice.pending[0].relations = relations;
+    const count = writes.length;
+    assert.throws(() => createOutbox(store, 200).flush(), { code: 'DATA_CORRUPT' });
+    assert.equal(writes.length, count);
+  }
+});
+
+test('context observations retain their identity without raising the acquisition checkpoint', () => {
+  const { box, store } = harness();
+  box.baseline('alice', ['500', '300', '100'], '300');
+  assert.equal(box.get('alice').watermark, '500');
+  assert.equal(box.get('alice').acquisitionWatermark, '300');
+  const restarted = createOutbox(store, 200);
+  restarted.flush();
+  assert.equal(restarted.get('alice').acquisitionWatermark, '300');
+  restarted.capture('alice', [{ id: '350', text: 'later ordinary post' }], BINDING, null, '350');
+  assert.equal(restarted.get('alice').watermark, '500');
+  assert.equal(restarted.get('alice').acquisitionWatermark, '350');
+  assert.deepEqual(restarted.get('alice').pending.map((tweet) => tweet.id), ['350']);
+});
+
+test('new ordinary posts merge below pending context IDs and checkpoint-only progress persists', () => {
+  const { box, store } = harness();
+  box.baseline('alice', ['300'], '300');
+  box.capture('alice', [{ id: '500', text: 'context observed early' }], BINDING, null, '300');
+  box.capture('alice', [{ id: '350', text: 'later ordinary post' }], BINDING, null, '350');
+  assert.deepEqual(box.get('alice').pending.map((tweet) => tweet.id), ['350', '500']);
+  box.capture('alice', [], BINDING, null, '500');
+  assert.equal(box.get('alice').acquisitionWatermark, '500');
+  const restarted = createOutbox(store, 200);
+  restarted.flush();
+  assert.equal(restarted.get('alice').acquisitionWatermark, '500');
+  assert.deepEqual(restarted.get('alice').pending.map((tweet) => tweet.id), ['350', '500']);
+});
+
+test('failed contextual capture leaves checkpoint and queue atomic across restart and recovery', () => {
+  const { box, store, files } = harness();
+  box.baseline('alice', ['500', '300'], '300');
+  const before = structuredClone(files.get('delivery_state.json'));
+  const write = store.writeJSON;
+  store.writeJSON = () => { throw new Error('synthetic checkpoint write failure'); };
+  assert.throws(() => box.capture('alice', [{ id: '350' }], BINDING, null, '350'), { code: 'OUTBOX_WRITE' });
+  assert.deepEqual(files.get('delivery_state.json'), before);
+  const restarted = createOutbox(store, 200);
+  restarted.flush();
+  assert.equal(restarted.get('alice').acquisitionWatermark, '300');
+  assert.deepEqual(restarted.get('alice').pending, []);
+  assert.equal(box.ready(), false);
+  store.writeJSON = write;
+  box.flush();
+  assert.equal(files.get('delivery_state.json').accounts.alice.acquisitionWatermark, '350');
+  assert.equal(files.get('delivery_state.json').accounts.alice.pending[0].id, '350');
+});
+
+test('corrupt acquisition checkpoints fail closed instead of dropping the fallback watermark', () => {
+  for (const invalid of ['bad', 300, null]) {
+    const { box, store, files, writes } = harness();
+    box.baseline('alice', ['500', '300'], '300');
+    files.get('delivery_state.json').accounts.alice.acquisitionWatermark = invalid;
+    const count = writes.length;
+    assert.throws(() => createOutbox(store, 200).flush(), { code: 'DATA_CORRUPT' });
+    assert.equal(writes.length, count);
+  }
+});

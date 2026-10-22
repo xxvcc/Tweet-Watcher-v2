@@ -1,6 +1,5 @@
 'use strict';
 // Tweet Watcher —— 单进程：既是网页面板，又是监控 worker。
-const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const net = require('net');
@@ -12,7 +11,7 @@ const cloudflareAddress = proxyAddr.compile(require('./lib/cloudflare-ranges.jso
 const cfgmod = require('./lib/config');
 const store = require('./lib/store');
 const auth = require('./lib/auth');
-const bird = require('./lib/bird');
+function collector() { return require(runtime.status().mode === 'legacy-live' ? './lib/bird' : './lib/twscrape'); }
 const state = require('./lib/state');
 const worker = require('./lib/worker');
 const runtime = require('./lib/runtime');
@@ -324,14 +323,10 @@ app.post('/api/password', requireAuth, requireCsrf, wrap(async (req, res) => {
 app.get('/api/config', requireAuth, (req, res) => {
   const cfg = cfgmod.getConfig();
   const s = cfgmod.getSecrets();
-  let birdOk = false;
-  try {
-    birdOk = fs.statSync(cfg.bird_path).isFile();
-    if (birdOk) fs.accessSync(cfg.bird_path, fs.constants.X_OK);
-  } catch (_) { birdOk = false; }
   res.json({
-    bird_path: cfg.bird_path, tg_chat_id: cfg.tg_chat_id, accounts: cfg.accounts, birdOk,
-    configRevision: cfg.revision,
+    bird_path: cfg.bird_path, tg_chat_id: cfg.tg_chat_id, accounts: cfg.accounts,
+    collector: { name: runtime.status().collector, fixed: true },
+    runtime: runtime.status(), configRevision: cfg.revision,
     secrets: { hasAuthToken: !!s.auth_token, hasCt0: !!s.ct0, hasTgBotToken: !!s.tg_bot_token },
   });
 });
@@ -443,33 +438,36 @@ app.post('/api/control', requireAuth, requireCsrf, (req, res) => {
   cfgmod.saveConfig(cfg);
   worker.setPaused(cfg.paused); // 即时生效，不必等下一 tick 读盘
   state.setStatus({ paused: cfg.paused });
-  const blocked = runtime.blocked();
+  const blocked = runtime.blocked('scheduling');
   state.log(blocked ? `${blocked.message}；暂停设置已保存` : (cfg.paused ? '监控已暂停' : '监控已恢复'));
   res.json({ ok: true, paused: cfg.paused, runtime: runtime.status() });
 });
 
-// bird 路径自动检测（单飞）
+// 固定采集器安装检查（单飞）；旧路由作为兼容别名。
 let detectInFlight = false;
-app.post('/api/detect-bird', requireAuth, requireCsrf, wrap(async (req, res) => {
+app.post(['/api/detect-collector', '/api/detect-bird'], requireAuth, requireCsrf, wrap(async (req, res) => {
   if (detectInFlight) return res.status(429).json({ found: false, error: '检测进行中，请稍候' });
   detectInFlight = true;
-  try { res.json(await bird.detectBird()); }
+  try {
+    const provider = collector();
+    res.json(await (runtime.status().mode === 'legacy-live' ? provider.detectBird() : provider.detectTwscrape()));
+  }
   finally { detectInFlight = false; }
 }));
 
 // test 端点：单飞，防止认证后并发派生大量子进程/出站请求（子进程风暴）
 let birdTestInFlight = false;
 let tgTestInFlight = false;
-app.post('/api/test/bird', requireAuth, requireCsrf, wrap(async (req, res) => {
-  const blocked = runtime.blocked();
+app.post(['/api/test/collector', '/api/test/bird'], requireAuth, requireCsrf, wrap(async (req, res) => {
+  const blocked = runtime.blocked('collection');
   if (blocked) return res.status(409).json(blocked);
   if (birdTestInFlight) return res.status(429).json({ ok: false, error: '上一次测试仍在进行，请稍候' });
   birdTestInFlight = true;
-  try { res.json(await worker.testBird((req.body && req.body.username) || '')); }
+  try { res.json(await worker.testCollector((req.body && req.body.username) || '')); }
   finally { birdTestInFlight = false; }
 }));
 app.post('/api/test/telegram', requireAuth, requireCsrf, wrap(async (req, res) => {
-  const blocked = runtime.blocked();
+  const blocked = runtime.blocked('delivery');
   if (blocked) return res.status(409).json(blocked);
   if (tgTestInFlight) return res.status(429).json({ ok: false, error: '上一次测试仍在进行，请稍候' });
   tgTestInFlight = true;

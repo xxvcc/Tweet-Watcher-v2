@@ -163,53 +163,54 @@
   }
 
   // ---------- 采集程序安装状态 ----------
-  let birdOk = true;
-  let birdDetectInFlight = false;
+  let collectorOk = true;
+  let collectorDetectInFlight = false;
   let settingsViewGeneration = 0;
-  function birdHintColor(h, kind) { h.style.color = kind === 'warn' ? 'var(--bad)' : kind === 'ok' ? 'var(--good)' : ''; }
-  function setBirdHint(kind, text) { const h = $('bird-hint'); if (!h) return; h.textContent = text; birdHintColor(h, kind); }     // 动态值走 textContent（防注入）
-  function setBirdInstallHint(kind, before, after) {
-    const h = $('bird-hint'); if (!h) return;
+  function collectorHintColor(h, kind) { h.style.color = kind === 'warn' ? 'var(--bad)' : kind === 'ok' ? 'var(--good)' : ''; }
+  function setCollectorHint(kind, text) { const h = $('collector-hint'); if (!h) return; h.textContent = text; collectorHintColor(h, kind); }     // 动态值走 textContent（防注入）
+  function setCollectorInstallHint(kind, before, after) {
+    const h = $('collector-hint'); if (!h) return;
     h.textContent = before;
-    h.appendChild(el('code', null, 'npm ci --ignore-scripts'));
+    h.appendChild(el('code', null, 'npm run collector:install'));
     h.appendChild(document.createTextNode(after));
-    birdHintColor(h, kind);
+    collectorHintColor(h, kind);
   }
-  async function detectBird(auto) {
-    const btn = $('btn-detect-bird');
-    if (birdDetectInFlight) {
+  async function detectCollector(auto) {
+    const btn = $('btn-detect-collector');
+    if (collectorDetectInFlight) {
       if (!auto) toast('采集程序检查正在进行，请稍候', 'err');
       return;
     }
-    const startingPath = $('bird_path').value;
+    const startingRevision = configRevision;
     const startingViewGeneration = settingsViewGeneration;
     let old;
-    birdDetectInFlight = true;
+    collectorDetectInFlight = true;
     if (btn) btn.disabled = true;
     if (btn && !auto) { old = btn.textContent; btn.textContent = '检测中…'; }
     try {
-      const r = await api('POST', 'api/detect-bird', {});
+      const r = await api('POST', 'api/detect-collector', {});
       // 检测可能持续数十秒。期间的手工输入、保存回载或关闭抽屉都代表原上下文已失效，
       // 旧响应不得再覆盖当前路径或更新与当前配置不符的提示。
       const stale = configSaveInFlight
         || $('settings').classList.contains('hidden')
         || settingsViewGeneration !== startingViewGeneration
-        || $('bird_path').value !== startingPath;
+        || configRevision !== startingRevision;
       if (stale) {
-        if (!auto) toast('检测已完成，但表单状态已变化，未覆盖当前 bird 路径', 'err');
+        if (!auto) toast('检测已完成，但表单状态已变化，未更新安装状态', 'err');
         return;
       }
       if (r.found) {
-        $('bird_path').value = r.path;
-        setBirdHint('ok', '✅ 采集程序已就绪' + (r.version ? '（' + r.version + '）' : '') + '。');
+        collectorOk = true;
+        setCollectorHint('ok', '✅ 采集程序已就绪' + (r.version ? '（' + r.version + '）' : '') + '。');
         if (!auto) toast('✅ 采集程序已就绪', 'ok');
       } else {
-        setBirdInstallHint('warn', '⚠ 采集程序不完整。请管理员在应用目录运行 ', '，然后重新检查。');
+        collectorOk = false;
+        setCollectorInstallHint('warn', '⚠ 采集程序不完整。请管理员在应用目录运行 ', '，然后重新检查。');
         if (!auto) toast('采集程序不完整，请联系管理员修复安装', 'err');
       }
     } catch (e) { if (!auto) toast(e.message, 'err'); }
     finally {
-      birdDetectInFlight = false;
+      collectorDetectInFlight = false;
       if (btn) btn.disabled = configSaveInFlight;
       if (btn && !auto) btn.textContent = old;
     }
@@ -218,7 +219,6 @@
   function configSignature(c) {
     const secrets = c && c.secrets && typeof c.secrets === 'object' ? c.secrets : {};
     return JSON.stringify({
-      bird_path: (c && c.bird_path) || '',
       tg_chat_id: (c && c.tg_chat_id) || '',
       accounts: Array.isArray(c && c.accounts) ? c.accounts : [],
       secrets: {
@@ -266,8 +266,8 @@
     configRevision = loadedRevision;
     loadedConfigSignature = signature;
     accountsCfg = c.accounts || [];
-    birdOk = c.birdOk !== false;
-    $('bird_path').value = c.bird_path || '';
+    $('collector-name').textContent = c.collector?.name === 'bird-legacy' ? 'Bird（旧版兼容模式）' : 'twscrape';
+    if (c.runtime) { statusData.runtime = c.runtime; renderTop(); }
     $('tg_chat_id').value = c.tg_chat_id || '';
     // 远端刷新意味着本地未保存密钥已被明确放弃；不能只更新 placeholder 后把旧 value 留着，
     // 否则下一次保存会用旧密钥覆盖刚同步的新版本。
@@ -278,8 +278,8 @@
     $('tg_bot_token').placeholder = c.secrets.hasTgBotToken ? DOTS : '';
     renderAcctRows(accountsCfg);
     ['auth_token', 'ct0', 'tg_bot_token'].forEach(refreshReveal);
-    if (!birdOk) setBirdInstallHint('warn', '⚠ 采集程序不完整。请管理员在应用目录运行 ', '，然后重新检查。');
-    else setBirdHint('ok', '采集程序已就绪，安装位置由服务器管理。');
+    if (!collectorOk) setCollectorInstallHint('warn', '⚠ 采集程序不完整。请管理员在应用目录运行 ', '，然后重新检查。');
+    else setCollectorHint('', '采集器由服务器固定部署；点击“检查安装”确认环境。');
     settingsDirty = false;
     remoteConfigPending = false;
     remoteConfigRevision = null;
@@ -318,12 +318,15 @@
     const canDeliver = runtime?.deliveryEnabled === true;
     const pill = $('livepill'), txt = $('live-text');
     $('runtime-notice').textContent = !runtime ? '正在读取运行模式…'
-      : !canCollect && !canDeliver ? '开发预览：X 采集与 Telegram 发送已关闭。twscrape 尚未接入。'
-      : '兼容验证模式：当前使用旧版 Bird，允许真实采集和发送。';
-    $('btn-test-bird').disabled = !canCollect;
+      : !canCollect && !canDeliver ? '开发预览：X 采集与 Telegram 发送已关闭。'
+      : !canDeliver ? '只读验证：可手动测试 X 采集；自动监控与 Telegram 发送已关闭。'
+        : runtime.mode === 'legacy-live' ? '兼容验证模式：当前使用旧版 Bird，允许真实采集和发送。'
+          : '正式运行模式：twscrape 自动采集并向 Telegram 推送新推文。';
+    $('btn-test-collector').disabled = !canCollect;
     $('btn-test-tg').disabled = !canDeliver;
     pill.className = 'livepill';
     if (!canCollect) { pill.classList.add('off'); txt.textContent = runtime ? '开发预览' : '连接中…'; }
+    else if (!canDeliver) { pill.classList.add('off'); txt.textContent = '只读验证'; }
     else if (!st.running) { pill.classList.add('off'); txt.textContent = '未运行'; }
     else if (st.paused) { pill.classList.add('paused'); txt.textContent = '已暂停'; }
     else { txt.textContent = '运行中'; }
@@ -572,7 +575,7 @@
     $('btn-settings').setAttribute('aria-expanded', 'true');
     document.body.classList.add('drawer-open');
     $('settings-close').focus();
-    if (!birdOk && !autoDetectTried) { autoDetectTried = true; detectBird(true); }
+    if (!collectorOk && !autoDetectTried) { autoDetectTried = true; detectCollector(true); }
   }
   function closeSettings() {
     settingsViewGeneration++;
@@ -588,7 +591,7 @@
     if (settingsReturnFocus && settingsReturnFocus.isConnected && typeof settingsReturnFocus.focus === 'function') settingsReturnFocus.focus();
     settingsReturnFocus = null;
   }
-  $('btn-detect-bird').onclick = () => detectBird(false);
+  $('btn-detect-collector').onclick = () => detectCollector(false);
   $('btn-settings').onclick = openSettings;
   $('settings-close').onclick = closeSettings;
   $('settings').addEventListener('click', (e) => { if (e.target === $('settings')) closeSettings(); });
@@ -643,7 +646,7 @@
   };
   $('settings').addEventListener('input', (e) => {
     if (!e.target || !e.target.matches('input')) return;
-    if (e.target.closest('#acct-list') || ['bird_path', 'tg_chat_id', 'auth_token', 'ct0', 'tg_bot_token'].includes(e.target.id)) {
+    if (e.target.closest('#acct-list') || ['tg_chat_id', 'auth_token', 'ct0', 'tg_bot_token'].includes(e.target.id)) {
       settingsDirty = true;
     }
   });
@@ -684,16 +687,16 @@
   function refreshReveal(id) { const e2 = $(id); if (e2 && e2._revealSync) e2._revealSync(); }
 
   function collectPayload() {
-    const p = { bird_path: $('bird_path').value.trim(), tg_chat_id: $('tg_chat_id').value.trim(), accounts: collectAccounts() };
+    const p = { tg_chat_id: $('tg_chat_id').value.trim(), accounts: collectAccounts() };
     if (Number.isSafeInteger(configRevision)) p.config_revision = configRevision;
     const at = $('auth_token').value.trim(), ct = $('ct0').value.trim(), bt = $('tg_bot_token').value.trim();
     if (at) p.auth_token = at; if (ct) p.ct0 = ct; if (bt) p.tg_bot_token = bt;
     return p;
   }
   function setConfigEditorDisabled(disabled) {
-    const selector = '#bird_path, #tg_chat_id, #auth_token, #ct0, #tg_bot_token, #acct-list input, #acct-list button, #btn-add-acct, #btn-detect-bird, #btn-save';
+    const selector = '#tg_chat_id, #auth_token, #ct0, #tg_bot_token, #acct-list input, #acct-list button, #btn-add-acct, #btn-detect-collector, #btn-save';
     $('settings').querySelectorAll(selector).forEach((control) => { control.disabled = disabled; });
-    $('btn-detect-bird').disabled = disabled || birdDetectInFlight;
+    $('btn-detect-collector').disabled = disabled || collectorDetectInFlight;
   }
   async function saveConfig() {
     if (configSaveInFlight) throw new Error('配置正在保存，请稍候');
@@ -731,15 +734,15 @@
     try { const r = await saveConfig(); toast(r.warnings && r.warnings.length ? '⚠ ' + r.warnings.join('；') : '✅ 配置已保存', r.warnings && r.warnings.length ? 'err' : 'ok'); }
     catch (e) { toast(e.message, 'err'); }
   };
-  $('btn-test-bird').onclick = async () => {
-    const btn = $('btn-test-bird'); btn.disabled = true; const old = btn.textContent; btn.textContent = '测试中…';
+  $('btn-test-collector').onclick = async () => {
+    const btn = $('btn-test-collector'); btn.disabled = true; const old = btn.textContent; btn.textContent = '测试中…';
     try {
       // 无改动时不要做一次空保存：空保存也会推进 revision 并取消 worker 在途任务。
       const saved = await saveDraftForTest();
       if (saved.warnings && saved.warnings.length) throw new Error('配置未完全保存：' + saved.warnings.join('；'));
-      const r = await api('POST', 'api/test/bird', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err');
+      const r = await api('POST', 'api/test/collector', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err');
     }
-    catch (e) { toast(e.message, 'err'); } finally { btn.disabled = false; btn.textContent = old; }
+    catch (e) { toast(e.message, 'err'); } finally { btn.textContent = old; renderTop(); }
   };
   $('btn-test-tg').onclick = async () => {
     const btn = $('btn-test-tg'); btn.disabled = true; const old = btn.textContent; btn.textContent = '测试中…';
@@ -748,7 +751,7 @@
       if (saved.warnings && saved.warnings.length) throw new Error('配置未完全保存：' + saved.warnings.join('；'));
       const r = await api('POST', 'api/test/telegram', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err');
     }
-    catch (e) { toast(e.message, 'err'); } finally { btn.disabled = false; btn.textContent = old; }
+    catch (e) { toast(e.message, 'err'); } finally { btn.textContent = old; renderTop(); }
   };
 
   let controlInFlight = false;

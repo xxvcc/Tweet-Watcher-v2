@@ -22,12 +22,13 @@ function makeState() {
   };
 }
 
-function loadWorker({ config, bird, telegram, state = makeState(), storedSent = {}, storedDelivery, secrets, writeError, files: sharedFiles }) {
+function loadWorker({ config, bird, telegram, state = makeState(), storedSent = {}, storedDelivery, secrets, writeError, files: sharedFiles, twscrape, mode = 'legacy-live' }) {
   const paths = {
     worker: require.resolve('../lib/worker'),
     store: require.resolve('../lib/store'),
     config: require.resolve('../lib/config'),
     bird: require.resolve('../lib/bird'),
+    twscrape: require.resolve('../lib/twscrape'),
     telegram: require.resolve('../lib/telegram'),
     state: require.resolve('../lib/state'),
     runtime: require.resolve('../lib/runtime'),
@@ -61,9 +62,14 @@ function loadWorker({ config, bird, telegram, state = makeState(), storedSent = 
       : (secrets || { auth_token: 'auth', ct0: 'ct0x', tg_bot_token: 'bot' }),
   });
   put(paths.bird, bird);
+  put(paths.twscrape, twscrape);
   put(paths.telegram, telegram);
   put(paths.state, state);
-  put(paths.runtime, { blocked: () => null, status: () => ({ mode: 'legacy-live' }) });
+  put(paths.runtime, {
+    blocked: (operation) => mode === 'read-only' && operation !== 'collection'
+      ? { ok: false, disabled: true, code: 'RUNTIME_DISABLED', message: '只读模式', error: '只读模式' } : null,
+    status: () => ({ mode, collector: mode === 'legacy-live' ? 'bird-legacy' : 'twscrape' }),
+  });
   delete require.cache[paths.worker];
   const worker = require(paths.worker);
   return {
@@ -1253,5 +1259,260 @@ test('a saved unchanged config initializes legacy state even when pruning has no
     assert.deepEqual(capturedState(harness).pending, []);
     assert.equal(harness.state.status.accounts.alice.lastPushed, 0);
     assert.equal(harness.state.status.accounts.alice.ok, true);
+  } finally { harness.restore(); }
+});
+
+test('read-only scheduler never touches config or outbox while manual collection remains available', { concurrency: false }, async () => {
+  let reads = 0;
+  let fetches = 0;
+  const harness = loadWorker({
+    mode: 'read-only',
+    config: () => { reads++; return watcherConfig(); },
+    twscrape: { async fetchTweets() {
+      fetches++;
+      return { ok: true, tweets: [{ id: '3', text: 'synthetic' }], coverage: { complete: true, reachedSince: false, exhausted: false, newestId: '3' } };
+    } },
+    telegram: noSendTelegram,
+  });
+  try {
+    harness.worker.start();
+    await harness.worker.tick();
+    assert.equal(reads, 0);
+    assert.equal(harness.writes.length, 0);
+    assert.equal((await harness.worker.testTelegram()).disabled, true);
+    const result = await harness.worker.testCollector('alice');
+    assert.equal(result.ok, true);
+    assert.equal(result.collector, 'twscrape');
+    assert.equal(fetches, 1);
+    assert.equal(harness.writes.length, 0);
+  } finally { harness.restore(); }
+});
+
+test('live twscrape durable delivery preserves relationships across failed send and process restart', { concurrency: false }, async () => {
+  const restoreTimers = fastTimers();
+  const relations = { replyToId: '7', quoteId: '8', repostId: null, editIds: ['9', '11'] };
+  const post = { id: '11', text: 'durable synthetic body', relations };
+  let harness;
+  let calls = 0;
+  let attempt = 0;
+  try {
+    harness = loadWorker({
+      config: watcherConfig(), mode: 'live',
+      twscrape: { async fetchTweets({ sinceId }) {
+        calls++;
+        if (!sinceId) return { ok: true, tweets: [{ id: '10' }], coverage: { complete: true, exhausted: false, reachedSince: false, newestId: '10' } };
+        return { ok: true, tweets: [post, { id: '10' }], coverage: { complete: true, exhausted: false, reachedSince: true, newestId: '11' } };
+      } },
+      telegram: {
+        formatTweet: (tweet) => tweet.text,
+        async sendMessage() {
+          attempt++;
+          const persisted = capturedState(harness);
+          assert.equal(persisted.watermark, '11');
+          assert.deepEqual(persisted.pending[0].relations, relations);
+          assert.equal(persisted.pending[0].text, post.text);
+          return { ok: false, permanent: true, description: 'synthetic outage' };
+        },
+      },
+    });
+    await harness.worker.tick();
+    assert.equal(capturedState(harness).watermark, '10');
+    assert.equal(attempt, 0, 'initial snapshot establishes baseline without historical delivery');
+    // A fresh worker also verifies first restart loads baseline without replay.
+    const files = harness.files;
+    const provider = require.cache[require.resolve('../lib/twscrape')].exports;
+    const telegram = require.cache[require.resolve('../lib/telegram')].exports;
+    harness.restore();
+    harness = loadWorker({ config: watcherConfig(), mode: 'live', files, twscrape: provider, telegram });
+    await harness.worker.tick();
+    assert.equal(attempt, 1);
+    assert.equal(capturedState(harness).pending.length, 1);
+    harness.restore();
+    const delivered = [];
+    harness = loadWorker({
+      config: watcherConfig(), mode: 'live', files,
+      twscrape: { async fetchTweets({ sinceId }) {
+        assert.equal(sinceId, '11');
+        return { ok: false, code: 'NETWORK_ERROR', error: 'synthetic X outage' };
+      } },
+      telegram: {
+        formatTweet: (tweet) => { assert.deepEqual(tweet.relations, relations); return tweet.text; },
+        async sendMessage({ text }) { delivered.push(text); return { ok: true }; },
+      },
+    });
+    await harness.worker.tick();
+    assert.deepEqual(delivered, [post.text], 'saved body remains deliverable while X is unavailable');
+    assert.equal(capturedState(harness).pending.length, 0);
+    assert.ok(capturedState(harness).sent.includes('11'));
+    assert.equal(calls, 2);
+  } finally { if (harness) harness.restore(); restoreTimers(); }
+});
+
+test('live twscrape missing coverage or an unreached checkpoint cannot advance the durable watermark', { concurrency: false }, async () => {
+  for (const coverage of [undefined, { complete: true, exhausted: false, reachedSince: false }]) {
+    const harness = loadWorker({
+      mode: 'live', config: watcherConfig(), storedSent: { alice: ['10'] },
+      twscrape: { async fetchTweets() { return { ok: true, tweets: [{ id: '11' }], coverage }; } },
+      telegram: noSendTelegram,
+    });
+    try {
+      await harness.worker.tick();
+      assert.equal(capturedState(harness).watermark, '10');
+      assert.deepEqual(capturedState(harness).pending, []);
+      assert.equal(harness.state.status.accounts.alice.ok, false);
+    } finally { harness.restore(); }
+  }
+});
+
+test('live collection serializes targets that share one X login', { concurrency: false }, async () => {
+  let active = 0;
+  let peak = 0;
+  const checked = [];
+  const harness = loadWorker({
+    mode: 'live', config: { ...watcherConfig(), accounts: ['alice', 'bob', 'carol'].map(account) },
+    twscrape: { async fetchTweets({ username }) {
+      active++;
+      peak = Math.max(peak, active);
+      checked.push(username);
+      await new Promise((resolve) => setImmediate(resolve));
+      active--;
+      return { ok: true, tweets: [{ id: '10' }], coverage: { complete: true, exhausted: false, reachedSince: false, newestId: '10' } };
+    } },
+    telegram: noSendTelegram,
+  });
+  try {
+    await harness.worker.tick();
+    assert.deepEqual(checked, ['alice', 'bob', 'carol']);
+    assert.equal(peak, 1);
+  } finally { harness.restore(); }
+});
+
+test('newer pin and module context cannot hide later chronological posts after restart', { concurrency: false }, async () => {
+  const restoreTimers = fastTimers();
+  let harness;
+  const delivered = [];
+  try {
+    harness = loadWorker({
+      mode: 'live', config: watcherConfig(),
+      twscrape: { async fetchTweets({ sinceId }) {
+        assert.equal(sinceId, undefined);
+        return { ok: true, tweets: [{ id: '500', is_pinned: true }, { id: '450', text: 'module context' }, { id: '300' }],
+          coverage: { complete: true, exhausted: false, reachedSince: false, newestId: '300' } };
+      } },
+      telegram: noSendTelegram,
+    });
+    await harness.worker.tick();
+    assert.equal(capturedState(harness).watermark, '500');
+    assert.equal(capturedState(harness).acquisitionWatermark, '300');
+    const files = harness.files;
+    harness.restore();
+    harness = loadWorker({
+      mode: 'live', config: watcherConfig(), files,
+      twscrape: { async fetchTweets({ sinceId }) {
+        assert.equal(sinceId, '300');
+        return { ok: true, tweets: [{ id: '500', is_pinned: true }, { id: '450', text: 'module context' }, { id: '350' }, { id: '300' }],
+          coverage: { complete: true, exhausted: false, reachedSince: true, newestId: '350' } };
+      } },
+      telegram: { formatTweet: (tweet) => tweet.id, async sendMessage({ text }) { delivered.push(text); return { ok: true }; } },
+    });
+    await harness.worker.tick();
+    assert.deepEqual(delivered, ['350']);
+    assert.equal(capturedState(harness).watermark, '500');
+    assert.equal(capturedState(harness).acquisitionWatermark, '350');
+    assert.equal(harness.state.status.accounts.alice.ok, true);
+  } finally { if (harness) harness.restore(); restoreTimers(); }
+});
+
+test('previously observed context can advance acquisition when it later becomes chronological without redelivery', { concurrency: false }, async () => {
+  const previousNow = Date.now;
+  let now = 100000;
+  Date.now = () => now;
+  let round = 0;
+  const harness = loadWorker({
+    mode: 'live', config: watcherConfig(),
+    twscrape: { async fetchTweets({ sinceId }) {
+      assert.equal(sinceId, [undefined, '300', '500'][round]);
+      return { ok: true, tweets: [{ id: '500' }, { id: '300' }],
+        coverage: { complete: true, exhausted: false, reachedSince: round > 0, newestId: round++ ? '500' : '300' } };
+    } },
+    telegram: noSendTelegram,
+  });
+  try {
+    await harness.worker.tick();
+    assert.equal(capturedState(harness).acquisitionWatermark, '300');
+    now += 31000;
+    await harness.worker.tick();
+    assert.equal(capturedState(harness).acquisitionWatermark, '500');
+    assert.deepEqual(capturedState(harness).pending, []);
+    now += 31000;
+    await harness.worker.tick();
+    assert.equal(round, 3);
+    assert.equal(harness.state.status.accounts.alice.ok, true);
+  } finally { harness.restore(); Date.now = previousNow; }
+});
+
+test('foreign conversation context is never delivered under the monitored account', { concurrency: false }, async () => {
+  const restoreTimers = fastTimers();
+  const delivered = [];
+  const harness = loadWorker({
+    mode: 'live', config: watcherConfig(), storedSent: { alice: ['300'] },
+    twscrape: { async fetchTweets({ sinceId }) {
+      assert.equal(sinceId, '300');
+      return { ok: true, tweets: [
+        { id: '999', author_username: 'bob', text: 'foreign module context' },
+        { id: '350', author_username: 'ALICE', text: 'own new post' },
+        { id: '300', author_username: 'alice' },
+      ], coverage: { complete: true, exhausted: false, reachedSince: true, newestId: '350' } };
+    } },
+    telegram: { formatTweet: (tweet) => tweet.text, async sendMessage({ text }) { delivered.push(text); return { ok: true }; } },
+  });
+  try {
+    await harness.worker.tick();
+    assert.deepEqual(delivered, ['own new post']);
+    assert.equal(capturedState(harness).acquisitionWatermark, '350');
+    assert.ok(!capturedState(harness).sent.includes('999'));
+  } finally { harness.restore(); restoreTimers(); }
+});
+
+test('live collection missing or invalid chronological identity cannot advance state', { concurrency: false }, async () => {
+  for (const newestId of [undefined, null, 11, 'bad', '12']) {
+    const harness = loadWorker({
+      mode: 'live', config: watcherConfig(), storedSent: { alice: ['10'] },
+      twscrape: { async fetchTweets() { return { ok: true, tweets: [{ id: '11' }, { id: '10' }],
+        coverage: { complete: true, exhausted: false, reachedSince: true, newestId } }; } },
+      telegram: noSendTelegram,
+    });
+    try {
+      await harness.worker.tick();
+      assert.equal(capturedState(harness).watermark, '10');
+      assert.deepEqual(capturedState(harness).pending, []);
+      assert.equal(harness.state.status.accounts.alice.ok, false);
+    } finally { harness.restore(); }
+  }
+});
+
+test('bounded slow collection keeps a fresh heartbeat and always clears its heartbeat timer', { concurrency: false }, async (t) => {
+  let heartbeat;
+  let cleared = false;
+  let now = 100000;
+  const timer = { unref() {} };
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(global, 'setInterval', (callback, delay) => { assert.equal(delay, 15000); heartbeat = callback; return timer; });
+  t.mock.method(global, 'clearInterval', (value) => { assert.equal(value, timer); cleared = true; });
+  const harness = loadWorker({
+    mode: 'live', config: watcherConfig(),
+    twscrape: { async fetchTweets() {
+      now += 61000;
+      heartbeat();
+      assert.equal(harness.state.status.lastTickAt, now);
+      throw new Error('synthetic bounded request timeout');
+    } },
+    telegram: noSendTelegram,
+  });
+  try {
+    await harness.worker.tick();
+    assert.equal(cleared, true);
+    assert.equal(harness.state.status.accounts.alice.ok, false);
+    assert.deepEqual(harness.files.get('delivery_state.json').accounts, {});
   } finally { harness.restore(); }
 });

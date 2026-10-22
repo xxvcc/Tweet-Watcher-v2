@@ -1,6 +1,6 @@
 # CI 模板与启用状态
 
-模板位于 [ci-template.yml](ci-template.yml)，包含 Node.js 22/24、按锁文件安装依赖、语法检查和离线应用测试，Actions 依赖固定到已核验的提交。
+模板位于 [ci-template.yml](ci-template.yml)，包含 Node.js 22/24、按锁文件安装依赖、语法检查、Node 离线应用测试与 Python 采集器测试，Actions 依赖固定到已核验的提交。
 
 **自动 CI 尚未启用。** 2026-10-23 首次推送时，GitHub 拒绝当前 OAuth 登录创建 `.github/workflows/ci.yml`，原因为缺少 `workflow` scope；本机也没有可用的 GitHub SSH 授权。为完整发布应用代码，模板保存在非自动执行位置。
 
@@ -10,8 +10,8 @@
 
 ```sh
 npm ci --ignore-scripts
-npm run check
-npm test
+npm run collector:install
+npm run verify
 ```
 
-本机 Node.js 24.18.0 已通过语法检查和 157 项测试。Node.js 22 的 CI 矩阵尚未运行，不能把模板已准备当作验证通过。
+本地 Node.js 22/24 与 Python 的最终测试结果见 [验证记录](../docs/VERIFICATION.md)。自动 CI 尚未运行，不能把模板已准备当作 Actions 验证通过。

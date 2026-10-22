@@ -1,50 +1,34 @@
 # 第二代工作交接
 
-更新日期：2026-10-23。此文档保存开发决策与恢复上下文，不保存会话全文、凭据、个人访问令牌或运行数据。
+更新：2026-10-23，当前开发版本 `0.1.0-beta.1`。
 
-## 已确认决定
+用户授权在独立 v2 目录完整开发并充分测试，可直接使用第一代现有 X Cookie 做验证。没有要求接管生产发送或发送真实 Telegram 测试消息；本轮不执行这些操作。
 
-用户准备以 twscrape 开发第二代，同时继续维护第一代，并已授权按独立公开仓库、独立目录方案实施。
+## 目录
 
-| 项目 | 位置或标识 | 作用 |
-|---|---|---|
-| 第一代仓库 | `https://github.com/xxvcc/Tweet-Watcher` | 现有 3.x 版本线 |
-| 第一代生产目录 | `/www/tweet-watcher` | 现有 `tweet-watcher.service` 的运行目录 |
-| 第一代开发目录 | `/www/tweet-watcher-v1-dev` | 独立维护和验证第一代 |
-| 第二代仓库 | `https://github.com/xxvcc/Tweet-Watcher-v2` | 新公开仓库，保留来源历史 |
-| 第二代开发目录 | `/www/tweet-watcher-v2` | 本仓库及后续适配开发 |
-| 派生基线 | `baf0c2da0927d4448b6f4525676652b49975c1fb` / `v3.5.0` | 第一代已发布版本 |
-| 第二代包名/开发版本 | `tweet-watcher-v2` / `0.1.0-alpha.1` | v2 是代际，不是沿用旧版 3.x 编号 |
+- v2：`/www/tweet-watcher-v2` → `https://github.com/xxvcc/Tweet-Watcher-v2`
+- v1 生产：`/www/tweet-watcher`，服务 `tweet-watcher.service`
+- v1 开发：`/www/tweet-watcher-v1-dev`
+- VS Code 多目录工作区：`/www/tweet-watcher-development.code-workspace`
 
-旧生产目录继续保留。新开发目录只通过 Git 取得源码与历史，不复制旧版 `data/`、依赖、会话数据库或备份。不因建立第二代而归档第一代。
+源码从第一代 v3.5.0 派生，保留历史和 MIT。v2 的 legacy remote 禁止推送，不与旧版共享可写 Git 对象或运行数据。
 
-## 本轮范围与状态
+## 已实现
 
-本轮已创建公开第二代仓库与两个独立开发副本，并建立第二代骨架、开发隔离、离线验证与文档。Git 对象存储无 alternates、无本地硬链接，第二代旧仓库 `legacy` remote 的推送地址设为 `DISABLED`。Node 管理面板、认证、调度和持久 outbox 沿用；Bird 代码作为历史与回归参照保留。默认 `TW_RUNTIME_MODE=development` 禁外部采集和消息发送，使用本仓库独立 `data/` 和 `127.0.0.1:8788`。`DATA_DIR` 可显式配置，但会拒绝第一代生产路径、公开静态目录及其软链接别名；`legacy-live` 仅是显式旧 Bird 兼容入口。
+Python 桥接固定 twscrape 签名/操作源码和 wheel 哈希，Node 完成严格整页解析、受限翻页与私有证据持久化。真实 Cookie 只读验证首轮 20 条、追赶 39 条 / 2 页，水位覆盖成功。没有把 Cookie 写入仓库，也未导入 Telegram 凭据。
 
-**twscrape 尚未接入。** 没有第二代生产服务、生产切换或真实采集验证。本机 Node.js 24.18.0 语法检查与 157 项应用测试已通过；CI 模板位于 `.github/ci-template.yml`，因当前 GitHub OAuth 缺 `workflow` 权限且无可用 SSH 授权，自动 CI 尚未启用；远程提交、CI 与工作区状态应以实际 Git/Actions 输出核对，不能仅根据本文推断。
+面板、调度和持久 outbox 已选择新采集器；字符串 ID、引用/回复/转发/编辑关系及长正文保留。默认 development 全部禁外部操作；read-only 只手动采集，关闭调度和发送；live 显式开启完整流程。旧 Bird 仅留 legacy-live 回归入口。
 
-## 已知设计依据
+完整测试、浏览器证据和具体限制记录在 [VERIFICATION.md](VERIFICATION.md)。开发说明以 [DEVELOPMENT.md](DEVELOPMENT.md) 为准。最早的 V2_DEVELOPMENT_PLAN.md 和研究文档是历史决策，不代表当前仍未接入。
 
-[研究报告](../research/twscrape-20261023/README.md)以 twscrape 正式版 0.20.1 与主分支 `63f61a518e576ea5c132f1156c03dda0520d76c1` 为审查对象。主分支尚不能直接称作已发布 0.21.0。研究未使用生产 X 凭据。
+## 本机预览
 
-核心限制：高层模型可能跳过坏记录，`user_tweets_raw()` 也可能过滤页面或正常提前停止；默认 HTTP 客户端和日志配置需要加固。正式版与主分支存在差异，不能自动跟踪最新版后宣称兼容。
+临时 `tweet-watcher-v2-preview.service` 在 `127.0.0.1:8788` 提供只读面板，DynamicUser、独立 `/var/lib/tweet-watcher-v2-preview`，未导入生产凭据。首次设置令牌由用户自己在终端 `journalctl -u tweet-watcher-v2-preview -n 30 --no-pager` 查看。VS Code 转发 8788 即可访问。此临时预览不随主机重启自动恢复。
 
-## 下一步
+## 运行与待办
 
-1. 先定义版本化 Node/Python 协议：字符串 ID、完整页、游标、关系、错误和覆盖状态。
-2. 实现受控单页采集及离线故障样本，固定源码/依赖，限制请求预算与响应大小。
-3. 校验完整页并设计原始证据暂存，成功持久化前不推进边界。保留引用、转发、回复和编辑身份。
-4. 限制 Cookie 与敏感头作用域、HTTPS 和重定向，关闭遥测与默认 dump。初期不实现密码、邮箱或 TOTP 自动登录。
-5. 离线验收后安排低并发真实只读对照，协调同一 X 会话的限流。生产发送另行进入验收阶段。
-6. 生产切换前处理旧 outbox、已发送记录、水位与回退后的新增交付确认，确保同一目标只有一套程序发送。
+第一代仍负责生产发送；v2 的生产迁移方案见 [MIGRATION.md](MIGRATION.md)，尚未执行。登录账号池、自动登录、长期历史补采、生产状态一键迁移不属于本版本实现。
 
-详细拆分见[开发指南](DEVELOPMENT.md)和[完整方案](V2_DEVELOPMENT_PLAN.md)。
+CI 模板在 `.github/ci-template.yml`，当前授权无法写 GitHub workflows；离线验证可完整本地运行。代码/远程/预览实际状态应使用 Git 和进程检查，不能仅据本文推断。
 
-## 跨目录继续工作
-
-开发任务默认在 `/www/tweet-watcher-v2` 执行。需要维护第一代时显式指定 `/www/tweet-watcher-v1-dev`；不要把第一代生产目录当作日常编辑区。两代公共安全修复需要评估、移植并在目标仓库验证。
-
-保留当前 VS Code 窗口，即可继续查看当前对话。建议使用“文件 → 新建窗口”，连接同一 SSH 主机，再打开 `/www/tweet-watcher-v2`。也可在新窗口打开本机工作区 `/www/tweet-watcher-development.code-workspace`，其中包含第二代与第一代开发目录，不包含生产目录。
-
-Codex 的 `/project` 选择面向新聊天，不保证把现有对话的工作目录切换到新项目。新窗口中的新聊天先读取本仓库 `AGENTS.md`、`docs/DEVELOPMENT.md` 与 `docs/SESSION_HANDOFF.md`，并明确任务目录为 `/www/tweet-watcher-v2`。这能恢复开发决策和约束；本文不替代原对话记录，也不声称会自动迁移原聊天。
+保留原 VS Code 对话窗口，在另一个窗口打开 v2 或多目录工作区即可浏览代码。新聊天读取 AGENTS.md、本文与开发指南来恢复项目决策；文件夹切换不保证旧对话自动迁移。

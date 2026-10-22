@@ -1,0 +1,39 @@
+[Unit]
+Description=Tweet Watcher v2 (read-only by default)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tweet-watcher-v2
+Group=tweet-watcher-v2
+WorkingDirectory=/opt/tweet-watcher-v2
+ExecStart=/usr/bin/node /opt/tweet-watcher-v2/server.js
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=8788
+Environment=DATA_DIR=/var/lib/tweet-watcher-v2
+Environment=TW_RUNTIME_MODE=read-only
+EnvironmentFile=-/etc/tweet-watcher-v2/runtime.conf
+StateDirectory=tweet-watcher-v2
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tweet-watcher-v2
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+CapabilityBoundingSet=
+LockPersonality=true
+LimitCORE=0
+MemoryMax=512M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

@@ -4,8 +4,8 @@ These instructions apply only to this repository, Tweet-Watcher-v2. It is the se
 
 ## Current state
 
-- Package: `tweet-watcher-v2`, development version `0.1.0-alpha.1`.
-- twscrape integration is not implemented yet. Bird code is retained as a migration reference and regression baseline.
+- Package: `tweet-watcher-v2`, development version `0.1.0-beta.1`.
+- twscrape single-page integration is implemented and read-only live-validated. Bird is retained only for explicit legacy-live regression compatibility. Read docs/VERIFICATION.md for tested limits.
 - Preserve Node UI, authentication, scheduling, durable outbox, and their safety properties unless the task explicitly changes them.
 - Keep current facts, proposals, implemented behavior, and validation results distinct in documentation.
 

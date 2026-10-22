@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/vladkens/twscrape",
+  "commit": "63f61a518e576ea5c132f1156c03dda0520d76c1",
+  "packageVersion": "0.20.1",
+  "files": {
+    "vendor/twscrape/__init__.py": "bc91fdcf9dc5497d87e667e7caf7d4e040d1d76b46b9d01aa8ed071b3d1da60f",
+    "vendor/twscrape/account.py": "34f0f6040bce604aee2629deeb77a7bb7023ee2b6e1812a7d47f348f868b4a15",
+    "vendor/twscrape/accounts_pool.py": "a0199d1e84617e08c7f65b39ceac7aea2484affa04a8cc20d9dcb175ea4232b6",
+    "vendor/twscrape/api.py": "752b81a9a0189a3961c8a0655b7b38a2ce22d589f2fffc7ae9c0f50824344be0",
+    "vendor/twscrape/cli.py": "2b44c816729351228d065d1e04e09e180c1d3fb5d73aae25db793b88b2457dec",
+    "vendor/twscrape/db.py": "726b99c36aef2385851dcdc4793b121386e8834d52fff07eca8f7e4423865a89",
+    "vendor/twscrape/http.py": "0add3d5224ed174b7e665e29120c27d0c364aa53a2a6c424845ba35bb5d66d8a",
+    "vendor/twscrape/imap.py": "457de3564b4fc494f80a8e2ddd70117132590b5eb121db1dda39c1b341ee37a1",
+    "vendor/twscrape/logger.py": "3e758cc2aa30b14358b6f3d2565945ed1e40bf0394675e37715b2bc16b4d1c7a",
+    "vendor/twscrape/login.py": "64214d2bf1e45d5c06ed42e1d96eacecd20eca19653f69b7132dd3ab38af94e8",
+    "vendor/twscrape/models.py": "151e84ba7885514a7d10764e3d17df33fe1724618a83ceee58ae002e4e9d812d",
+    "vendor/twscrape/queue_client.py": "bd849590e2077b7de9867d45e91aa2a16c381207f151e2179ad4b687ffcd248e",
+    "vendor/twscrape/telemetry.py": "4117b1dbc7f8b937ae802b5d4d5caffbcba467697704a0331740630a7eaee35c",
+    "vendor/twscrape/utils.py": "64402a6fdf80b90218d74616fa0260732447ec6df44c30b1343e67b8a0488f6a",
+    "vendor/twscrape/xclid.py": "15fd4ce69d9fd047833527b3ca41c1c94a11c67c40fd2dbf801e446f1f79c5ae",
+    "vendor/TWSCRAPE_LICENSE": "6dd3687e100b410364f96b27f6710d506f4e09ec79d7b724d879d80d84f453db"
+  }
+}

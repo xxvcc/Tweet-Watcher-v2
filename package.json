@@ -1,13 +1,16 @@
 {
   "name": "tweet-watcher-v2",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-beta.1",
   "private": true,
-  "description": "Second-generation Tweet Watcher development scaffold for a twscrape collector",
+  "description": "X to Telegram watcher with an isolated, pinned twscrape collector",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
-    "check": "node scripts/check-syntax.js"
+    "check": "node scripts/check-syntax.js",
+    "collector:install": "bash scripts/install-collector.sh",
+    "test:collector": ".venv/bin/python -m unittest discover -s collector/tests -v",
+    "verify": "npm run check && npm test && npm run test:collector"
   },
   "dependencies": {
     "@steipete/bird": "0.8.0",
