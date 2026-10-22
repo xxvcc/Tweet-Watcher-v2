@@ -173,6 +173,7 @@ input.secret::placeholder{ color:var(--mut); letter-spacing:2px; opacity:1; }
 .msg{ padding:9px 13px; border-radius:9px; margin-bottom:14px; font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
 .msg.ok{ background:var(--good-dim); border:1px solid color-mix(in srgb,var(--good) 35%,transparent); color:var(--good); }
 .msg.err{ background:var(--bad-dim); border:1px solid color-mix(in srgb,var(--bad) 35%,transparent); color:var(--bad); }
+.msg.notice{ border:1px solid color-mix(in srgb,var(--warn) 45%,transparent); color:var(--warn); }
 /* toast 固定在视口顶部、层级高于设置抽屉(50)，避免保存/测试反馈被抽屉遮罩挡住 */
 #toast{ position:fixed; top:12px; left:50%; transform:translateX(-50%); z-index:60; width:calc(100% - 36px); max-width:520px; box-shadow:var(--shadow); }
 

@@ -157,6 +157,7 @@ function buildDocument() {
   const live = add(dash, 'livepill'); add(live, 'live-text');
   ['btn-pause', 'btn-resume', 'btn-settings', 'theme-toggle', 'logout'].forEach((id) => add(dash, id, 'button', id === 'btn-pause' || id === 'btn-resume' ? 'hidden' : ''));
   add(dash, 'toast', 'div', 'hidden');
+  add(dash, 'runtime-notice');
   ['stat-accounts', 'stat-next', 'stat-pushes', 'stat-uptime', 'acct-count'].forEach((id) => add(dash, id));
   add(dash, 'cards'); add(dash, 'cards-empty', 'div', 'hidden'); add(dash, 'feed');
 
@@ -219,6 +220,33 @@ const baseConfig = (revision = 10, overrides = {}) => ({
   configRevision: revision,
   secrets: { hasAuthToken: true, hasCt0: true, hasTgBotToken: true },
   ...overrides,
+});
+
+test('runtime policy stays visible and disables collection and delivery controls', async () => {
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    throw new Error(`unexpected request: ${url}`);
+  });
+  const stream = app.EventSource.instances.at(-1);
+  stream.listeners.status({ data: JSON.stringify({
+    running: true, paused: false, accounts: {},
+    runtime: { mode: 'development', collectionEnabled: false, deliveryEnabled: false },
+  }) });
+  assert.equal(app.ids.get('live-text').textContent, '开发预览');
+  assert.match(app.ids.get('runtime-notice').textContent, /采集.*发送已关闭/);
+  assert.equal(app.ids.get('btn-test-bird').disabled, true);
+  assert.equal(app.ids.get('btn-test-tg').disabled, true);
+  assert.equal(app.ids.get('btn-pause').classList.contains('hidden'), true);
+  assert.equal(app.ids.get('btn-resume').classList.contains('hidden'), true);
+  stream.listeners.status({ data: JSON.stringify({
+    running: true, paused: false, accounts: {},
+    runtime: { mode: 'legacy-live', collectionEnabled: true, deliveryEnabled: true },
+  }) });
+  assert.match(app.ids.get('runtime-notice').textContent, /旧版 Bird/);
+  assert.equal(app.ids.get('btn-test-bird').disabled, false);
+  assert.equal(app.ids.get('btn-test-tg').disabled, false);
+  assert.equal(app.ids.get('live-text').textContent, '运行中');
 });
 
 test('CSRF submission supports the legacy subpath and prefers host-only cookies after migration', async () => {

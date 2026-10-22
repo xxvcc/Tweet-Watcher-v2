@@ -96,7 +96,7 @@
     document.body.classList.remove('drawer-open');
     clearPasswordForm();
     $('auth').classList.remove('hidden');
-    $('auth-title').textContent = needSetup ? '设置访问密码' : 'Tweet Watcher';
+    $('auth-title').textContent = needSetup ? '设置访问密码' : 'Tweet Watcher v2';
     $('auth-sub').textContent = needSetup ? '首次使用，请设置一个密码' : '请输入密码访问';
     $('auth-label').textContent = needSetup ? '设置密码' : '密码';
     $('auth-pw').placeholder = needSetup ? '至少 8 位' : '访问密码';
@@ -313,13 +313,22 @@
   // ---------- 顶栏 / 指标 ----------
   function renderTop() {
     const st = statusData || {};
+    const runtime = st.runtime;
+    const canCollect = runtime?.collectionEnabled === true;
+    const canDeliver = runtime?.deliveryEnabled === true;
     const pill = $('livepill'), txt = $('live-text');
+    $('runtime-notice').textContent = !runtime ? '正在读取运行模式…'
+      : !canCollect && !canDeliver ? '开发预览：X 采集与 Telegram 发送已关闭。twscrape 尚未接入。'
+      : '兼容验证模式：当前使用旧版 Bird，允许真实采集和发送。';
+    $('btn-test-bird').disabled = !canCollect;
+    $('btn-test-tg').disabled = !canDeliver;
     pill.className = 'livepill';
-    if (!st.running) { pill.classList.add('off'); txt.textContent = '未运行'; }
+    if (!canCollect) { pill.classList.add('off'); txt.textContent = runtime ? '开发预览' : '连接中…'; }
+    else if (!st.running) { pill.classList.add('off'); txt.textContent = '未运行'; }
     else if (st.paused) { pill.classList.add('paused'); txt.textContent = '已暂停'; }
     else { txt.textContent = '运行中'; }
-    $('btn-pause').classList.toggle('hidden', !st.running || st.paused);
-    $('btn-resume').classList.toggle('hidden', !st.running || !st.paused);
+    $('btn-pause').classList.toggle('hidden', !canCollect || !st.running || st.paused);
+    $('btn-resume').classList.toggle('hidden', !canCollect || !st.running || !st.paused);
   }
   // 从未检查过的账号返回 null（区别于 rem=0，避免误显示"0:00 / 满格"）
   function nextCheckSec(cfgAcct) {

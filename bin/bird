@@ -3,6 +3,12 @@
 // A fixed, checked-in runner: no user-selected executable or CLI config loading.
 const fs = require('node:fs');
 async function main() {
+  const blocked = require('../lib/runtime').blocked();
+  if (blocked) {
+    fs.writeSync(2, blocked.message);
+    process.exitCode = 1;
+    return;
+  }
   const installed = require('@steipete/bird/package.json');
   if (installed.version !== '0.8.0') throw new Error('Unsupported bundled Bird version');
   const { TimelineClient, fetchTimeline } = await import('../lib/bird-timeline.mjs');

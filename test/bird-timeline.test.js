@@ -1,5 +1,8 @@
 'use strict';
 const test = require('node:test');
+// All clients below use synthetic responses. Keep the default deny policy in
+// production code, and bypass it only for these inherited parser contracts.
+test.mock.method(require('../lib/runtime'), 'blocked', () => null);
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -189,7 +192,7 @@ test('bundled runner exercises pinned Bird transport and strict adapter with off
     const output = execFileSync(process.execPath,
       ['--import', preload, path.resolve(__dirname, '../bin/bird'), 'alice', '1'], {
         encoding: 'utf8', timeout: 5000,
-        env: { AUTH_TOKEN: 'offline-auth', CT0: 'offline-ct0' },
+        env: { AUTH_TOKEN: 'offline-auth', CT0: 'offline-ct0', TW_RUNTIME_MODE: 'legacy-live' },
       });
     const result = JSON.parse(output);
     assert.deepEqual(result.tweets.map((t) => t.id), ['2', '1']);

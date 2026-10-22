@@ -8,6 +8,9 @@ const path = require('path');
 const config = require('../lib/config');
 const bird = require('../lib/bird');
 const store = require('../lib/store');
+// External execution remains stubbed below; this suite tests the legacy adapter
+// contract, while runtime.test.js exercises the real default deny policy.
+test.mock.method(require('../lib/runtime'), 'blocked', () => null);
 
 test('account normalization ignores malformed username types instead of throwing', () => {
   const normalized = config.normalizeAccounts([

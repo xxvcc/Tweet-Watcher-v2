@@ -15,8 +15,9 @@ const auth = require('./lib/auth');
 const bird = require('./lib/bird');
 const state = require('./lib/state');
 const worker = require('./lib/worker');
+const runtime = require('./lib/runtime');
 
-const PORT = process.env.PORT || 8787;
+const PORT = process.env.PORT || 8788;
 const HOST = process.env.HOST || '127.0.0.1';
 // 独立管理域名部署时固定浏览器来源。省略时保留本地开发和子路径代理兼容性。
 function parsePublicOrigin(value) {
@@ -429,7 +430,7 @@ app.get('/api/status', requireAuth, (req, res) => {
   const st = state.getStatus();
   const heartbeatAge = st.lastTickAt == null ? NaN : Date.now() - st.lastTickAt;
   const healthy = st.running && Number.isFinite(heartbeatAge) && heartbeatAge >= 0 && heartbeatAge < 60000;
-  res.json({ status: st, paused: cfg.paused, accounts: cfg.accounts, healthy });
+  res.json({ status: st, paused: cfg.paused, accounts: cfg.accounts, healthy, runtime: runtime.status() });
 });
 app.get('/api/logs', requireAuth, (req, res) => { res.json({ logs: state.getLogs(200) }); });
 
@@ -442,8 +443,9 @@ app.post('/api/control', requireAuth, requireCsrf, (req, res) => {
   cfgmod.saveConfig(cfg);
   worker.setPaused(cfg.paused); // 即时生效，不必等下一 tick 读盘
   state.setStatus({ paused: cfg.paused });
-  state.log(cfg.paused ? '监控已暂停' : '监控已恢复');
-  res.json({ ok: true, paused: cfg.paused });
+  const blocked = runtime.blocked();
+  state.log(blocked ? `${blocked.message}；暂停设置已保存` : (cfg.paused ? '监控已暂停' : '监控已恢复'));
+  res.json({ ok: true, paused: cfg.paused, runtime: runtime.status() });
 });
 
 // bird 路径自动检测（单飞）
@@ -459,12 +461,16 @@ app.post('/api/detect-bird', requireAuth, requireCsrf, wrap(async (req, res) => 
 let birdTestInFlight = false;
 let tgTestInFlight = false;
 app.post('/api/test/bird', requireAuth, requireCsrf, wrap(async (req, res) => {
+  const blocked = runtime.blocked();
+  if (blocked) return res.status(409).json(blocked);
   if (birdTestInFlight) return res.status(429).json({ ok: false, error: '上一次测试仍在进行，请稍候' });
   birdTestInFlight = true;
   try { res.json(await worker.testBird((req.body && req.body.username) || '')); }
   finally { birdTestInFlight = false; }
 }));
 app.post('/api/test/telegram', requireAuth, requireCsrf, wrap(async (req, res) => {
+  const blocked = runtime.blocked();
+  if (blocked) return res.status(409).json(blocked);
   if (tgTestInFlight) return res.status(429).json({ ok: false, error: '上一次测试仍在进行，请稍候' });
   tgTestInFlight = true;
   try { res.json(await worker.testTelegram()); }

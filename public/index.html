@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tweet Watcher</title>
+<title>Tweet Watcher v2</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%A6%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=3.5.0">
+<link rel="stylesheet" href="style.css?v=0.1.0-alpha.1">
 </head>
 <body>
 
@@ -13,7 +13,7 @@
 <div id="auth" class="center hidden">
   <div class="login-box">
     <div class="lock">🐦</div>
-    <h1 id="auth-title">Tweet Watcher</h1>
+    <h1 id="auth-title">Tweet Watcher v2</h1>
     <div class="sub" id="auth-sub">请输入密码访问</div>
     <div id="auth-msg" class="msg err hidden" role="alert"></div>
     <form id="auth-form">
@@ -35,7 +35,7 @@
 <!-- 监控台 -->
 <div id="dash" class="wrap hidden">
   <div class="top">
-    <div class="brand"><span class="bird">🐦</span> Tweet <em>Watcher</em></div>
+    <div class="brand"><span class="bird">🐦</span> Tweet <em>Watcher v2</em></div>
     <span class="livepill" id="livepill" role="status" aria-live="polite"><span class="beat"></span> <span id="live-text">连接中…</span></span>
     <span class="grow"></span>
     <button class="ctrl hidden" id="btn-pause" type="button">⏸ 暂停</button>
@@ -46,6 +46,7 @@
   </div>
 
   <div id="toast" class="msg hidden" role="status" aria-live="polite"></div>
+  <div id="runtime-notice" class="msg notice" role="status" aria-live="polite">正在读取运行模式…</div>
 
   <div class="stats">
     <div class="stat"><div class="k">监控账号</div><div class="v tnum" id="stat-accounts">—</div></div>
@@ -121,7 +122,7 @@
         <div class="inline-actions">
           <button class="btn-ghost btn-sm" id="btn-detect-bird" type="button">🔍 检查安装</button>
         </div>
-        <div class="hint" id="bird-hint">点「自动检测」自动查找 bird；未安装请执行 <code>npm install -g @steipete/bird@0.8.0</code>。</div>
+        <div class="hint" id="bird-hint">当前保留旧版 Bird 用于兼容验证；twscrape 正在开发。可检查本地依赖是否完整。</div>
       </div>
 
       <button class="btn-primary btn-full" id="btn-save" type="button">💾 保存配置</button>
@@ -144,6 +145,6 @@
   </div>
 </div>
 
-<script src="app.js?v=3.5.0"></script>
+<script src="app.js?v=0.1.0-alpha.1"></script>
 </body>
 </html>

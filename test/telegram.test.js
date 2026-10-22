@@ -3,6 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const telegram = require('../lib/telegram');
+// These inherited transport-contract tests use fake fetch implementations. Keep
+// the process in development mode and bypass only the mocked module boundary.
+test.mock.method(require('../lib/runtime'), 'blocked', () => null);
 
 test('Telegram business error_code controls permanent and rate-limit classification', async () => {
   const originalFetch = global.fetch;

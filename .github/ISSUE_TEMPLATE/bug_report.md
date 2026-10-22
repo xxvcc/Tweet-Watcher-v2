@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a problem with Tweet Watcher
+about: Report a problem with Tweet Watcher v2
 labels: bug
 assignees: ''
 ---
@@ -15,7 +15,7 @@ Describe the issue clearly and briefly.
 - Node.js version (`node -v`):
 - Reverse proxy: Nginx / none / other
 - Process manager: systemd / manual (`node server.js`) / other
-- bird version:
+- Runtime mode and collector version:
 - Panel URL / deployment path:
 
 ## What you expected
@@ -28,7 +28,7 @@ Describe the actual behavior.
 
 ## Logs / error messages
 
-Paste relevant output from the panel's live log (📋 实时日志), `journalctl -u tweet-watcher`, or the terminal running `node server.js`.
+Paste relevant output from the panel's live log (📋 实时日志), the development process logs, or the terminal running `node server.js`.
 
 ```text
 Paste logs here

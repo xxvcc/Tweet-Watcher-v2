@@ -1,12 +1,13 @@
 {
-  "name": "tweet-watcher",
-  "version": "3.5.0",
+  "name": "tweet-watcher-v2",
+  "version": "0.1.0-alpha.1",
   "private": true,
-  "description": "Twitter/X -> Telegram monitor with a built-in web panel (single Node service)",
+  "description": "Second-generation Tweet Watcher development scaffold for a twscrape collector",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "check": "node scripts/check-syntax.js"
   },
   "dependencies": {
     "@steipete/bird": "0.8.0",
@@ -16,5 +17,9 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xxvcc/Tweet-Watcher-v2.git"
   }
 }

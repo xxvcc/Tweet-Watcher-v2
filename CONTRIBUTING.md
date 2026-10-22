@@ -1,84 +1,35 @@
-# Contributing to Tweet Watcher
+# Contributing to Tweet Watcher v2
 
-感谢你关注 [`Tweet-Watcher`](README.md)。本项目当前规模不大，但欢迎通过 Issue、Pull Request、文档修正与部署经验分享来帮助完善它。
+本仓库处于 `0.1.0-alpha.1` 开发阶段。twscrape 尚未接入；贡献前请阅读[开发指南](docs/DEVELOPMENT.md)与[第二代方案](docs/V2_DEVELOPMENT_PLAN.md)。第一代仍由 [Tweet-Watcher](https://github.com/xxvcc/Tweet-Watcher) 独立维护。
 
-本项目是单进程 `server.js` 同时承担网页面板与后台 worker 的 Node.js 工具（`package.json` version 3.5.0），请在贡献时以现有 Node 实现为准。
-
-## 贡献方式
-
-你可以通过以下方式参与：
-
-- 提交 Bug 报告
-- 提交功能建议
-- 改进 [`README.md`](README.md) 和相关文档
-- 优化 [`server.js`](server.js)、[`lib/*.js`](lib/) 与 [`public/*`](public/) 的稳定性、安全性与兼容性
-- 提供不同服务器环境下的部署经验（systemd 常驻 + nginx 反代）
-
-## 提交 Issue 前
-
-在提交问题前，建议先完成以下检查：
-
-1. 阅读 [`README.md`](README.md) 中的安装、运行与常见问题章节
-2. 在面板点击「检查安装」与「测试 Twitter 拉取」，确认随应用发布的采集程序及凭据可用
-3. 查看面板中的实时日志（SSE 推送的内存日志），或用 `journalctl -u tweet-watcher -f` 查看 stdout 日志
-4. 确认 Twitter Cookie（`auth_token` / `ct0`）、Telegram Bot Token、Chat ID 配置是否正确
-5. 确认 Node.js 版本满足要求（>= 22），以及 bird CLI 路径是否正确（固定为仓库 `bin/bird`）
-
-## Pull Request 指南
-
-提交 PR 时请尽量遵循以下原则：
-
-- 保持改动聚焦，不要把无关重构混在同一个 PR 中
-- 修改代码时同步更新相关文档，如 [`README.md`](README.md) 或 [`CHANGELOG.md`](CHANGELOG.md)
-- 不要提交本地运行时数据或敏感信息，例如 `data/` 下的运行时文件：
-  - [`data/config.json`](data/config.json)
-  - [`data/secrets.json`](data/secrets.json)
-  - [`data/password.json`](data/password.json)
-  - [`data/session_secret.json`](data/session_secret.json)
-  - [`data/sent_ids.json`](data/sent_ids.json)
-  - [`data/delivery_state.json`](data/delivery_state.json)
-  - [`data/delivery_state.initialized.json`](data/delivery_state.initialized.json)
-- 提交前至少执行基础语法检查：
+## 开发和验证
 
 ```bash
+npm ci --ignore-scripts
 node --check server.js
 for f in lib/*.js; do node --check "$f"; done
 npm test
 ```
 
-## 代码风格建议
+现有回归测试使用合成数据、受控替身和本机服务。普通贡献不需要真实 X Cookie 或 Telegram 账号。测试材料应能离线复现，不用真实会话验证常规修复。
 
-本项目暂未引入完整的自动化代码规范工具，提交时请尽量保持：
+- 每个改动说明问题、最终行为和实际验证范围；不要把离线测试通过写成真实接口可用。
+- 涉及解析、游标、关系字段或恢复流程时，增加能暴露故障的用例。未知结构和不完整响应不能转成成功空结果。
+- 修改接口或运行行为时同步更新文档。尚未实现、仅讨论或依赖真实验证的内容应明确标注。
+- 跨代修复记录源提交，在本仓库重新验证；不要假设第一代测试结论自动覆盖第二代。
 
-- JavaScript 代码风格与现有文件一致（原生 Node，运行依赖以 package-lock.json 为准，包含固定 Bird 库，前端为纯静态 `public/`，无构建、无框架）
-- 变量命名清晰、含义明确
-- 新增逻辑尽量保持函数化，避免把复杂逻辑直接堆在流程代码中
-- 安全相关改动优先考虑：
-  - 输入校验
-  - 凭据最小暴露
-  - 文件权限与锁
-  - 命令执行边界控制
+## 凭据与运行边界
 
-## 安全问题反馈
+禁止提交运行时数据、Cookie、访问令牌、密码、会话密钥、账号数据库、未脱敏日志、备份、虚拟环境或依赖目录。公开问题只使用合成样本或必要的脱敏结构，不附真实 HTTP 响应头。
 
-如果你发现的是安全漏洞，而不是普通 Bug，请不要创建公开 Issue 或披露利用细节。请按 [`SECURITY.md`](SECURITY.md) 使用 GitHub 的私密漏洞报告渠道。
+默认禁采集和禁发送是代码层边界，不得用恢复监控或测试接口绕过。真实只读对照、测试发送和生产迁移分阶段实施，使用各自明确的目标、凭据范围和运行预算。
 
-## 提交信息建议
+第一代生产目录不用于第二代开发。第二代不得共享第一代配置、数据文件、运行用户或管理会话密钥。
 
-建议使用清晰的提交信息，例如：
+## 代码与文档风格
 
-- `fix: handle bird createdAt field`
-- `docs: improve deployment instructions`
-- `security: harden session and login rate limiting`
-- `chore: add repository community files`
+保持现有原生 Node 与静态前端结构。Python 采集器加入后固定版本和依赖，并为跨语言协议提供版本、字符串 ID、大小限制与明确错误类型。避免无关重构，保留原有版权和许可证信息。
 
-## 文档贡献
+## 安全报告
 
-文档改进同样非常重要，尤其欢迎以下内容：
-
-- 不同 Linux / systemd / Nginx 环境的部署说明（含 SSE 反代与 `X-Forwarded-For` 注入）
-- bird 返回结构变化下的兼容说明
-- 常见错误信息与排查步骤
-- 适合中文用户的使用示例与故障处理经验
-
-感谢你的贡献。
+安全问题按 [SECURITY.md](SECURITY.md) 私密报告；公开 Issue 不包含凭据或利用细节。

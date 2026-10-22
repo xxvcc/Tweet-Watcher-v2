@@ -38,12 +38,12 @@ test('state reads reject special and oversized files before reading their conten
   let reads = 0;
   try {
     fs.readFileSync = () => { reads++; return '{}'; };
-    fs.lstatSync = () => ({ isFile: () => false, size: 0 });
+    fs.lstatSync = () => ({ isFile: () => false, isSymbolicLink: () => false, size: 0 });
     const special = store.readState('special.json');
     assert.equal(special.status, 'corrupt');
     assert.match(special.error.message, /不是普通文件/);
 
-    fs.lstatSync = () => ({ isFile: () => true, size: 9 * 1024 * 1024 });
+    fs.lstatSync = () => ({ isFile: () => true, isSymbolicLink: () => false, size: 9 * 1024 * 1024 });
     const oversized = store.readState('oversized.json');
     assert.equal(oversized.status, 'corrupt');
     assert.match(oversized.error.message, /超过/);
@@ -67,7 +67,7 @@ test('transaction rollback deletion refuses non-file data paths', { concurrency:
   const originalUnlink = fs.unlinkSync;
   let unlinks = 0;
   try {
-    fs.lstatSync = () => ({ isFile: () => false });
+    fs.lstatSync = () => ({ isFile: () => false, isSymbolicLink: () => false });
     fs.unlinkSync = () => { unlinks++; };
     assert.throws(() => store.removeJSON('config.json'), /非普通数据文件/);
     assert.equal(unlinks, 0);

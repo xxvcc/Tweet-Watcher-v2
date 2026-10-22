@@ -30,6 +30,7 @@ function loadWorker({ config, bird, telegram, state = makeState(), storedSent = 
     bird: require.resolve('../lib/bird'),
     telegram: require.resolve('../lib/telegram'),
     state: require.resolve('../lib/state'),
+    runtime: require.resolve('../lib/runtime'),
   };
   const writes = [];
   const files = sharedFiles || new Map([['sent_ids.json', structuredClone(storedSent)]]);
@@ -62,6 +63,7 @@ function loadWorker({ config, bird, telegram, state = makeState(), storedSent = 
   put(paths.bird, bird);
   put(paths.telegram, telegram);
   put(paths.state, state);
+  put(paths.runtime, { blocked: () => null, status: () => ({ mode: 'legacy-live' }) });
   delete require.cache[paths.worker];
   const worker = require(paths.worker);
   return {

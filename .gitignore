@@ -40,6 +40,23 @@ node_modules/
 jspm_packages/
 .cache/
 
+# --- Python collector environments and private session databases -----------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+
 # --- 日志 ---------------------------------------------------------------
 *.log
 # Archived offline test evidence, reviewed to contain no runtime credentials.
