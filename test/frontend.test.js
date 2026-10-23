@@ -240,31 +240,27 @@ test('runtime policy stays visible and disables collection and delivery controls
   assert.equal(app.ids.get('btn-pause').classList.contains('hidden'), true);
   assert.equal(app.ids.get('btn-resume').classList.contains('hidden'), true);
   stream.listeners.status({ data: JSON.stringify({
-    running: true, paused: false, accounts: {},
-    runtime: { mode: 'legacy-live', collectionEnabled: true, deliveryEnabled: true },
-  }) });
-  assert.match(app.ids.get('runtime-notice').textContent, /旧版 Bird/);
-  assert.equal(app.ids.get('btn-test-collector').disabled, false);
-  assert.equal(app.ids.get('btn-test-tg').disabled, false);
-  assert.equal(app.ids.get('live-text').textContent, '运行中');
-  stream.listeners.status({ data: JSON.stringify({
     running: false, paused: false, accounts: {},
     runtime: { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false },
   }) });
   assert.match(app.ids.get('runtime-notice').textContent, /只读验证.*自动监控.*发送已关闭/);
   assert.equal(app.ids.get('btn-test-collector').disabled, false);
   assert.equal(app.ids.get('btn-test-tg').disabled, true);
+  assert.equal(app.ids.get('btn-pause').classList.contains('hidden'), true);
+  assert.equal(app.ids.get('btn-resume').classList.contains('hidden'), true);
   assert.equal(app.ids.get('live-text').textContent, '只读验证');
   stream.listeners.status({ data: JSON.stringify({
     running: true, paused: false, accounts: {},
     runtime: { mode: 'live', collectionEnabled: true, deliveryEnabled: true },
   }) });
   assert.match(app.ids.get('runtime-notice').textContent, /twscrape 自动采集/);
+  assert.equal(app.ids.get('btn-test-collector').disabled, false);
   assert.equal(app.ids.get('btn-test-tg').disabled, false);
   assert.equal(app.ids.get('live-text').textContent, '运行中');
+  assert.equal(app.ids.get('collector-name').textContent, 'twscrape');
 });
 
-test('CSRF submission supports the legacy subpath and prefers host-only cookies after migration', async () => {
+test('CSRF submission supports relative paths and prefers secure host-only cookies', async () => {
   const app = await loadApp(async (url) => {
     if (url === 'api/session') return response({ hasPassword: true, authed: true });
     if (url === 'api/config') return response(baseConfig());
@@ -272,15 +268,15 @@ test('CSRF submission supports the legacy subpath and prefers host-only cookies 
     throw new Error(`unexpected request: ${url}`);
   });
   for (const [cookie, expected, base] of [
-    ['other=value; tw_csrf=legacy%2Dcsrf', 'legacy-csrf', 'https://lanny.me/a/'],
-    ['tw_csrf=stale-legacy; __Host-tw_csrf=host%2Dcsrf', 'host-csrf', 'https://tweet.lanny.me/'],
-    ['__Host-tw_csrf=rotated-csrf; tw_csrf=stale-legacy', 'rotated-csrf', 'https://tweet.lanny.me/'],
-    ['__Host-tw_csrf=; tw_csrf=local-csrf', 'local-csrf', 'http://localhost:8787/'],
+    ['other=value; tw_csrf=local%2Dcsrf', 'local-csrf', 'http://localhost:8788/panel/'],
+    ['tw_csrf=stale-local; __Host-tw_csrf=host%2Dcsrf', 'host-csrf', 'https://panel.example/'],
+    ['__Host-tw_csrf=rotated-csrf; tw_csrf=stale-local', 'rotated-csrf', 'https://panel.example/'],
+    ['__Host-tw_csrf=; tw_csrf=local-csrf', 'local-csrf', 'http://localhost:8788/'],
   ]) {
     app.document.cookie = cookie;
     await app.ids.get('btn-pause').onclick();
     const request = app.requests.at(-1);
-    assert.equal(request.url, 'api/control', 'relative API paths preserve the /a/ proxy mount');
+    assert.equal(request.url, 'api/control', 'relative API paths preserve an optional proxy mount');
     assert.equal(new URL(request.url, base).href, `${base}api/control`);
     assert.equal(request.opts.method, 'POST');
     assert.equal(request.opts.credentials, 'same-origin');

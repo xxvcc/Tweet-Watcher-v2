@@ -42,12 +42,11 @@ const authMock = {
 const configMock = {
   LIMITS: { MAX_ACCOUNTS: 100 },
   getConfig: () => ({
-    bird_path: '/usr/bin/bird', tg_chat_id: '1', paused: false, accounts: [],
+    tg_chat_id: '1', paused: false, accounts: [],
     revision: persistedRevision, persisted: configPersisted,
   }),
   getSecrets: () => ({ auth_token: '', ct0: '', tg_bot_token: '' }),
   normalizeAccounts: () => [],
-  validBirdPath: () => true,
   validRevision: (value) => Number.isSafeInteger(value) && value >= 0,
   nextRevision: (value) => value + 1,
   validChatId: (value) => {
@@ -75,11 +74,11 @@ const moduleMocks = new Map([
     sweepTmp: () => {},
     removeJSON: () => { configRemovals++; persistedRevision = 0; },
   }],
-  [require.resolve('../lib/bird'), { detectBird: async () => ({ found: false }) }],
+  [require.resolve('../lib/twscrape'), { detectTwscrape: async () => ({ found: false }) }],
   [require.resolve('../lib/state'), stateMock],
   [require.resolve('../lib/worker'), {
     start: () => {}, setPaused: () => {}, configChanged: (revision) => { status.configRevision = revision; },
-    testBird: async () => ({ ok: true }), testTelegram: async () => ({ ok: true }),
+    testCollector: async () => ({ ok: true }), testTelegram: async () => ({ ok: true }),
   }],
 ]);
 
@@ -460,4 +459,42 @@ test('string Telegram chat IDs retain whitespace normalization', { concurrency: 
   assert.equal(body.tg_chat_id, '-12345');
   assert.deepEqual(body.warnings, []);
   assert.equal(savedConfigs[0].tg_chat_id, '-12345');
+});
+
+test('removed collector routes return 404 while the fixed collector endpoint remains available', { concurrency: false }, async (t) => {
+  if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
+  const options = {
+    method: 'POST',
+    headers: { Cookie: 'tw_sess=x; tw_csrf=y', 'x-csrf': 'y' },
+  };
+  for (const route of ['/api/detect-bird', '/api/test/bird']) {
+    const response = await fetch(`${base}${route}`, options);
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { ok: false, error: '接口不存在' });
+  }
+  const response = await fetch(`${base}/api/detect-collector`, options);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { found: false });
+});
+
+test('configuration API exposes a fixed collector and cannot select an executable', { concurrency: false }, async (t) => {
+  if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
+  persistedRevision = 3;
+  savedConfigs = [];
+  const loaded = await fetch(`${base}/api/config`, { headers: { Cookie: 'tw_sess=x' } });
+  assert.equal(loaded.status, 200);
+  const current = await loaded.json();
+  assert.deepEqual(current.collector, { name: 'twscrape', fixed: true });
+  assert.equal(Object.hasOwn(current, 'bird_path'), false);
+
+  const saved = await fetch(`${base}/api/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: 'tw_sess=x; tw_csrf=y', 'x-csrf': 'y' },
+    body: JSON.stringify({ config_revision: 3, bird_path: '/untrusted/executable' }),
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(Object.hasOwn(await saved.json(), 'bird_path'), false);
+  assert.deepEqual(savedConfigs, [{
+    tg_chat_id: '1', paused: false, accounts: [], revision: 4,
+  }]);
 });

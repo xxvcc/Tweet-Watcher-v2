@@ -2,9 +2,17 @@
 
 本文件记录第二代 Tweet Watcher 的变更。“v2”是架构代际，开发版本从 `0.1.0-alpha.1` 开始，正式发行编号尚未确定。
 
-第一代 `3.5.0` 及更早版本记录保留在 [历史 CHANGELOG](docs/LEGACY_V1_CHANGELOG.md)。
+第一代 `3.5.0` 及更早版本记录见 [第一代 CHANGELOG](https://github.com/xxvcc/Tweet-Watcher/blob/v3.5.0/CHANGELOG.md)。
 
 ## [Unreleased]
+
+## [0.1.0-beta.2] - 2026-10-23
+
+- 删除 Bird 运行文件、npm 依赖与旧运行模式，采集固定为 twscrape。
+- 移除旧采集路径配置和 API 别名，将有效的配置、调度、队列和安全测试迁移到当前接口。
+- 删除第一代部署模板、历史文档副本及本地 legacy remote，保留源代码历史、许可证与 twscrape 研究证据。
+- 取消第一代 ID 文件的自动导入；已有第二代队列保持兼容，误放的旧状态触发明确错误。
+- 清理过期开发说明，并重新执行离线、跨 Node 版本及浏览器验证。
 
 ## [0.1.0-beta.1] - 2026-10-23
 

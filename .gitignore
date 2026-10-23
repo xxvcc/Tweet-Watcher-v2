@@ -11,7 +11,8 @@
 #   secrets.json        auth_token / ct0 / tg_bot_token（明文凭据）
 #   password.json       登录密码 bcrypt 哈希
 #   session_secret.json 会话 HMAC 密钥 + epoch
-#   sent_ids.json       去重表（运行时状态）
+#   delivery_state.json 采集检查点与待发送队列
+#   sent_ids.json       旧实例误放的敏感状态仍需排除
 # 整个目录一律排除；同时兜底列出各文件名，防止 data/ 被误改位置后仍泄露。
 /data/
 data/

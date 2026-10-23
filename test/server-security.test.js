@@ -26,7 +26,7 @@ inject('../lib/store', {
 const bus = new EventEmitter();
 inject('../lib/state', { bus, getStatus: () => ({ running: true }), getLogs: () => [], log: () => {} });
 inject('../lib/config', { getConfig: () => ({ paused: false, accounts: [] }) });
-inject('../lib/bird', {});
+inject('../lib/twscrape', {});
 inject('../lib/worker', {});
 const auth = require('../lib/auth');
 const { app } = require('../server');
@@ -66,7 +66,7 @@ test('legacy session payloads without an origin field remain valid before the do
   const cookie = `tw_sess=${payload}.${signature}; tw_csrf=synthetic-csrf`;
   const response = await fetch(`${base}/api/status`, { headers: { cookie } });
   assert.equal(response.status, 200);
-  assert.equal(auth.verifySession(`${payload}.${signature}`, 'https://tweet.lanny.me'), false);
+  assert.equal(auth.verifySession(`${payload}.${signature}`, 'https://watcher.example.test'), false);
 });
 
 test('logout closes an established SSE stream before any later log or status event', async () => {

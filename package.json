@@ -1,6 +1,6 @@
 {
   "name": "tweet-watcher-v2",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "private": true,
   "description": "X to Telegram watcher with an isolated, pinned twscrape collector",
   "main": "server.js",
@@ -13,7 +13,6 @@
     "verify": "npm run check && npm test && npm run test:collector"
   },
   "dependencies": {
-    "@steipete/bird": "0.8.0",
     "bcryptjs": "^2.4.3",
     "express": "4.22.3",
     "proxy-addr": "2.0.8"

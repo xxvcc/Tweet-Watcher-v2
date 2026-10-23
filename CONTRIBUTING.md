@@ -1,14 +1,13 @@
 # Contributing to Tweet Watcher v2
 
-本仓库处于 `0.1.0-alpha.1` 开发阶段。twscrape 尚未接入；贡献前请阅读[开发指南](docs/DEVELOPMENT.md)与[第二代方案](docs/V2_DEVELOPMENT_PLAN.md)。第一代仍由 [Tweet-Watcher](https://github.com/xxvcc/Tweet-Watcher) 独立维护。
+本仓库处于 `0.1.0-beta.2` 开发阶段，采集器仅使用固定版本 twscrape；贡献前请阅读[开发指南](docs/DEVELOPMENT.md)与[第二代方案](docs/V2_DEVELOPMENT_PLAN.md)。第一代仍由 [Tweet-Watcher](https://github.com/xxvcc/Tweet-Watcher) 独立维护。
 
 ## 开发和验证
 
 ```bash
 npm ci --ignore-scripts
-node --check server.js
-for f in lib/*.js; do node --check "$f"; done
-npm test
+npm run collector:install
+npm run verify
 ```
 
 现有回归测试使用合成数据、受控替身和本机服务。普通贡献不需要真实 X Cookie 或 Telegram 账号。测试材料应能离线复现，不用真实会话验证常规修复。
@@ -28,7 +27,7 @@ npm test
 
 ## 代码与文档风格
 
-保持现有原生 Node 与静态前端结构。Python 采集器加入后固定版本和依赖，并为跨语言协议提供版本、字符串 ID、大小限制与明确错误类型。避免无关重构，保留原有版权和许可证信息。
+保持现有原生 Node 与静态前端结构。Python 采集器已固定版本和依赖；跨语言协议必须保持版本、字符串 ID、大小限制与明确错误类型。避免无关重构，保留原有版权和许可证信息。
 
 ## 安全报告
 

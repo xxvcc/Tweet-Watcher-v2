@@ -1,5 +1,5 @@
 # 部署资源
 
-[第二代模板与说明](v2/README.md) 位于 `v2/`，默认仅允许手动只读采集。生产迁移与回退另见 [MIGRATION.md](../docs/MIGRATION.md)。
+本仓库只提供[第二代模板与说明](v2/README.md)，默认仅允许手动只读采集。生产迁移与回退另见 [MIGRATION.md](../docs/MIGRATION.md)。
 
-本目录根部从 Tweet-Watcher v3.5.0 继承的其他配置只用于理解第一代的代理、来源隔离和服务配置。文件中的域名、端口 8787、服务名和路径属于第一代，不能作为第二代配置覆盖现有服务。
+第一代配置已从本目录移除；维护第一代时，请使用[第一代仓库对应版本](https://github.com/xxvcc/Tweet-Watcher/tree/v3.5.0/deploy)。

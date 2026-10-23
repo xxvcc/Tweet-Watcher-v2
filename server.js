@@ -11,7 +11,7 @@ const cloudflareAddress = proxyAddr.compile(require('./lib/cloudflare-ranges.jso
 const cfgmod = require('./lib/config');
 const store = require('./lib/store');
 const auth = require('./lib/auth');
-function collector() { return require(runtime.status().mode === 'legacy-live' ? './lib/bird' : './lib/twscrape'); }
+const collector = require('./lib/twscrape');
 const state = require('./lib/state');
 const worker = require('./lib/worker');
 const runtime = require('./lib/runtime');
@@ -324,7 +324,7 @@ app.get('/api/config', requireAuth, (req, res) => {
   const cfg = cfgmod.getConfig();
   const s = cfgmod.getSecrets();
   res.json({
-    bird_path: cfg.bird_path, tg_chat_id: cfg.tg_chat_id, accounts: cfg.accounts,
+    tg_chat_id: cfg.tg_chat_id, accounts: cfg.accounts,
     collector: { name: runtime.status().collector, fixed: true },
     runtime: runtime.status(), configRevision: cfg.revision,
     secrets: { hasAuthToken: !!s.auth_token, hasCt0: !!s.ct0, hasTgBotToken: !!s.tg_bot_token },
@@ -345,7 +345,7 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
     return res.status(409).json({ ok: false, error: '配置已被其他页面修改，请重新载入后再保存' });
   }
   const warnings = [];
-  // 与 bird_path / tg_chat_id 一致的局部更新语义：字段缺省即保留原值。
+  // 与 tg_chat_id 一致的局部更新语义：字段缺省即保留原值。
   // 否则一个只改 tg_chat_id 的请求会把 accounts 静默清空。
   let accounts = cur.accounts;
   if (b.accounts !== undefined) {
@@ -357,12 +357,6 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
         warnings.push(`部分账号被忽略（非法用户名/重复/超出上限 ${cfgmod.LIMITS.MAX_ACCOUNTS}）`);
       }
     }
-  }
-  let bird_path = cur.bird_path;
-  if (typeof b.bird_path === 'string' && b.bird_path.trim()) {
-    const bp = b.bird_path.trim();
-    if (cfgmod.validBirdPath(bp)) bird_path = bp;
-    else warnings.push('bird 路径固定为随应用部署的可信执行器，已保留原值');
   }
   let tg_chat_id = cur.tg_chat_id;
   if (b.tg_chat_id !== undefined) {
@@ -386,7 +380,7 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   updateSecret('ct0', 'ct0');
   updateSecret('tg_bot_token', 'Telegram Bot Token');
   const nextRevision = cfgmod.nextRevision(currentRevision);
-  const nextConfig = { bird_path, tg_chat_id, paused: cur.paused, accounts, revision: nextRevision };
+  const nextConfig = { tg_chat_id, paused: cur.paused, accounts, revision: nextRevision };
   cfgmod.saveConfig(nextConfig);
   try {
     cfgmod.saveSecrets(ns);
@@ -395,7 +389,7 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
     let rollbackError = null;
     try {
       // 首次保存前 config.json 不存在。此时写回默认对象会把“未配置”错误地变成
-      // “已持久化的空配置”，并令 worker 清掉受支持的 sent_ids-only 迁移数据。
+      // “已持久化的空配置”，并令 worker 按空账号列表清理已有发送状态。
       if (cur.persisted === false) store.removeJSON('config.json');
       else cfgmod.saveConfig(cur);
     } catch (re) { rollbackError = re; }
@@ -416,7 +410,7 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   // worker 的 generation 负责取消旧任务；对外版本必须使用已落盘值。
   worker.configChanged(nextRevision);
   // 回传服务端最终采用的值，便于前端核对被静默保留的字段
-  res.json({ ok: true, accounts, bird_path, tg_chat_id, warnings });
+  res.json({ ok: true, accounts, tg_chat_id, warnings });
 });
 
 // ===== 状态 / 日志 / 控制 / 测试 =====
@@ -443,28 +437,27 @@ app.post('/api/control', requireAuth, requireCsrf, (req, res) => {
   res.json({ ok: true, paused: cfg.paused, runtime: runtime.status() });
 });
 
-// 固定采集器安装检查（单飞）；旧路由作为兼容别名。
+// 固定采集器安装检查（单飞）。
 let detectInFlight = false;
-app.post(['/api/detect-collector', '/api/detect-bird'], requireAuth, requireCsrf, wrap(async (req, res) => {
+app.post('/api/detect-collector', requireAuth, requireCsrf, wrap(async (req, res) => {
   if (detectInFlight) return res.status(429).json({ found: false, error: '检测进行中，请稍候' });
   detectInFlight = true;
   try {
-    const provider = collector();
-    res.json(await (runtime.status().mode === 'legacy-live' ? provider.detectBird() : provider.detectTwscrape()));
+    res.json(await collector.detectTwscrape());
   }
   finally { detectInFlight = false; }
 }));
 
 // test 端点：单飞，防止认证后并发派生大量子进程/出站请求（子进程风暴）
-let birdTestInFlight = false;
+let collectorTestInFlight = false;
 let tgTestInFlight = false;
-app.post(['/api/test/collector', '/api/test/bird'], requireAuth, requireCsrf, wrap(async (req, res) => {
+app.post('/api/test/collector', requireAuth, requireCsrf, wrap(async (req, res) => {
   const blocked = runtime.blocked('collection');
   if (blocked) return res.status(409).json(blocked);
-  if (birdTestInFlight) return res.status(429).json({ ok: false, error: '上一次测试仍在进行，请稍候' });
-  birdTestInFlight = true;
+  if (collectorTestInFlight) return res.status(429).json({ ok: false, error: '上一次测试仍在进行，请稍候' });
+  collectorTestInFlight = true;
   try { res.json(await worker.testCollector((req.body && req.body.username) || '')); }
-  finally { birdTestInFlight = false; }
+  finally { collectorTestInFlight = false; }
 }));
 app.post('/api/test/telegram', requireAuth, requireCsrf, wrap(async (req, res) => {
   const blocked = runtime.blocked('delivery');

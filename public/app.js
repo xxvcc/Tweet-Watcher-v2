@@ -266,7 +266,7 @@
     configRevision = loadedRevision;
     loadedConfigSignature = signature;
     accountsCfg = c.accounts || [];
-    $('collector-name').textContent = c.collector?.name === 'bird-legacy' ? 'Bird（旧版兼容模式）' : 'twscrape';
+    $('collector-name').textContent = 'twscrape';
     if (c.runtime) { statusData.runtime = c.runtime; renderTop(); }
     $('tg_chat_id').value = c.tg_chat_id || '';
     // 远端刷新意味着本地未保存密钥已被明确放弃；不能只更新 placeholder 后把旧 value 留着，
@@ -320,8 +320,7 @@
     $('runtime-notice').textContent = !runtime ? '正在读取运行模式…'
       : !canCollect && !canDeliver ? '开发预览：X 采集与 Telegram 发送已关闭。'
       : !canDeliver ? '只读验证：可手动测试 X 采集；自动监控与 Telegram 发送已关闭。'
-        : runtime.mode === 'legacy-live' ? '兼容验证模式：当前使用旧版 Bird，允许真实采集和发送。'
-          : '正式运行模式：twscrape 自动采集并向 Telegram 推送新推文。';
+        : '正式运行模式：twscrape 自动采集并向 Telegram 推送新推文。';
     $('btn-test-collector').disabled = !canCollect;
     $('btn-test-tg').disabled = !canDeliver;
     pill.className = 'livepill';

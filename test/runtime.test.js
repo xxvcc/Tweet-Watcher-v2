@@ -34,10 +34,6 @@ test('default development policy stays disabled even under NODE_ENV=production',
 });
 
 test('runtime mode requires an explicit collection and delivery policy', () => {
-  const live = run("console.log(JSON.stringify(require('./lib/runtime').status()))", { TW_RUNTIME_MODE: 'legacy-live' });
-  assert.equal(live.status, 0, live.stderr);
-  assert.equal(JSON.parse(live.stdout).collector, 'bird-legacy');
-  assert.equal(JSON.parse(live.stdout).collectionEnabled, true);
   for (const [mode, sends] of [['read-only', false], ['live', true]]) {
     const child = run("console.log(JSON.stringify(require('./lib/runtime').status()))", { TW_RUNTIME_MODE: mode });
     assert.equal(child.status, 0, child.stderr);
@@ -47,21 +43,22 @@ test('runtime mode requires an explicit collection and delivery policy', () => {
     assert.equal(policy.deliveryEnabled, sends);
     assert.equal(policy.schedulingEnabled, sends);
   }
-  for (const mode of ['production', 'twscrape', 'DEVELOPMENT', 'readonly']) {
+  for (const mode of ['legacy-live', 'production', 'twscrape', 'DEVELOPMENT', 'readonly']) {
     const rejected = run("require('./lib/runtime')", { TW_RUNTIME_MODE: mode });
     assert.notEqual(rejected.status, 0);
     assert.match(rejected.stderr, /TW_RUNTIME_MODE/);
   }
 });
 
-test('Bird and Telegram exits refuse valid synthetic requests before any external IO', async (t) => {
+test('twscrape and Telegram refuse valid synthetic requests before any external IO', async (t) => {
   let externalCalls = 0;
   t.mock.method(require('node:child_process'), 'execFile', () => { externalCalls++; throw new Error('must not spawn'); });
+  t.mock.method(require('node:child_process'), 'spawn', () => { externalCalls++; throw new Error('must not spawn'); });
   t.mock.method(global, 'fetch', async () => { externalCalls++; throw new Error('must not fetch'); });
-  const bird = require('../lib/bird');
+  const collector = require('../lib/twscrape');
   const telegram = require('../lib/telegram');
-  const fetched = await bird.fetchTweets({
-    birdPath: require('../lib/config').BUNDLED_BIRD, username: 'synthetic', count: 1,
+  const fetched = await collector.fetchTweets({
+    username: 'synthetic', count: 1,
     authToken: 'FAKE_AUTH', ct0: 'FAKE_CSRF',
   });
   const sent = await telegram.sendMessage({ botToken: '1:FAKE_BOT', chatId: '1', text: 'synthetic' });
@@ -71,11 +68,7 @@ test('Bird and Telegram exits refuse valid synthetic requests before any externa
     assert.equal(result.code, 'RUNTIME_DISABLED');
   }
   assert.equal(externalCalls, 0);
-  const { fetchTimeline } = await import('../lib/bird-timeline.mjs');
-  await assert.rejects(fetchTimeline({
-    getUserIdByUsername() { externalCalls++; throw new Error('must not resolve account'); },
-  }, { username: 'synthetic', count: 1 }), { code: 'RUNTIME_DISABLED' });
-  assert.equal(externalCalls, 0);
+  assert.equal(fs.existsSync(process.env.DATA_DIR), false);
 });
 
 test('worker start, ticks and manual tests do not read configuration or alter delivery state when disabled', async (t) => {
@@ -88,22 +81,11 @@ test('worker start, ticks and manual tests do not read configuration or alter de
   t.mock.method(state, 'log', () => {});
   worker.start();
   await worker.tick();
-  assert.equal((await worker.testBird('synthetic')).disabled, true);
+  assert.equal((await worker.testCollector('synthetic')).disabled, true);
   assert.equal((await worker.testTelegram()).disabled, true);
   assert.equal(state.getStatus().running, false);
   assert.equal(reads, 0);
   assert.equal(fs.existsSync(process.env.DATA_DIR), false);
-});
-
-test('direct bundled Bird runner also fails closed in development mode', () => {
-  const child = spawnSync(process.execPath, ['bin/bird', 'synthetic', '1'], {
-    cwd: root, env: { ...process.env, AUTH_TOKEN: 'FAKE_AUTH', CT0: 'FAKE_CSRF' },
-    encoding: 'utf8', timeout: 10000,
-  });
-  assert.equal(child.status, 1);
-  assert.equal(child.stdout, '');
-  assert.match(child.stderr, /开发模式/);
-  assert.doesNotMatch(child.stderr, /FAKE_AUTH|FAKE_CSRF/);
 });
 
 test('authenticated manual APIs and resume keep the development boundary visible', async (t) => {
@@ -114,14 +96,14 @@ test('authenticated manual APIs and resume keep the development boundary visible
   t.mock.method(cfg, 'saveConfig', () => {});
   const worker = require('../lib/worker');
   let calls = 0;
-  for (const name of ['testCollector', 'testBird', 'testTelegram']) t.mock.method(worker, name, async () => { calls++; });
+  for (const name of ['testCollector', 'testTelegram']) t.mock.method(worker, name, async () => { calls++; });
   t.mock.method(require('../lib/state'), 'log', () => {});
   const { app } = require('../server');
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve, reject) => { server.once('listening', resolve); server.once('error', reject); });
   try {
     const base = `http://127.0.0.1:${server.address().port}`;
-    for (const endpoint of ['collector', 'bird', 'telegram']) {
+    for (const endpoint of ['collector', 'telegram']) {
       const response = await fetch(`${base}/api/test/${endpoint}`, { method: 'POST' });
       assert.equal(response.status, 409);
       const body = await response.json();
@@ -143,18 +125,23 @@ test('authenticated manual APIs and resume keep the development boundary visible
   }
 });
 
-test('read-only blocks Telegram and every direct legacy Bird exit before IO', () => {
+test('read-only blocks Telegram and scheduling before network, subprocess or configuration access', () => {
   const child = run(`
     const assert = require('node:assert/strict');
     require('node:child_process').execFile = () => { throw new Error('unexpected subprocess'); };
+    require('node:child_process').spawn = () => { throw new Error('unexpected subprocess'); };
     global.fetch = () => { throw new Error('unexpected network'); };
+    const cfg = require('./lib/config');
+    cfg.getConfig = cfg.getSecrets = () => { throw new Error('unexpected configuration access'); };
+    require('./lib/state').log = () => {};
     (async () => {
       const telegram = await require('./lib/telegram').sendMessage({ botToken: '1:FAKE', chatId: '1', text: 'test' });
-      const bird = await require('./lib/bird').fetchTweets({ birdPath: require('./lib/config').BUNDLED_BIRD,
-        username: 'alice', count: 1, authToken: 'FAKE_AUTH', ct0: 'FAKE_CSRF' });
-      for (const result of [telegram, bird]) assert.equal(result.code, 'RUNTIME_DISABLED');
-      const { fetchTimeline } = await import('./lib/bird-timeline.mjs');
-      await assert.rejects(fetchTimeline({}, { username: 'alice', count: 1 }), { code: 'RUNTIME_DISABLED' });
+      assert.equal(telegram.code, 'RUNTIME_DISABLED');
+      const worker = require('./lib/worker');
+      worker.start();
+      await worker.tick();
+      assert.equal(require('./lib/state').getStatus().running, false);
+      assert.equal(require('node:fs').existsSync(process.env.DATA_DIR), false);
       console.log('blocked');
     })().catch(() => { process.exitCode = 1; });
   `, { TW_RUNTIME_MODE: 'read-only' });
@@ -180,17 +167,15 @@ test('read-only API permits manual collection while refusing delivery and exposi
   await new Promise((resolve, reject) => { server.once('listening', resolve); server.once('error', reject); });
   try {
     const base = `http://127.0.0.1:${server.address().port}`;
-    for (const endpoint of ['collector', 'bird']) {
-      const response = await fetch(`${base}/api/test/${endpoint}`, { method: 'POST' });
-      assert.equal(response.status, 200);
-      assert.equal((await response.json()).collector, 'twscrape');
-    }
+    const response = await fetch(`${base}/api/test/collector`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).collector, 'twscrape');
     const rejected = await fetch(`${base}/api/test/telegram`, { method: 'POST' });
     assert.equal(rejected.status, 409);
     assert.equal((await rejected.json()).code, 'RUNTIME_DISABLED');
     const status = await (await fetch(`${base}/api/status`)).json();
     assert.equal(status.runtime.schedulingEnabled, false);
-    assert.equal(collections, 2);
+    assert.equal(collections, 1);
     assert.equal(deliveries, 0);
   } finally {
     server.closeAllConnections();

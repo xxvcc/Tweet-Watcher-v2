@@ -70,7 +70,7 @@ input:focus{ border-color:var(--accent); box-shadow:0 0 0 3px var(--focus); }
 /* ---------- 顶栏 ---------- */
 .top{ display:flex; align-items:center; gap:10px; margin-bottom:18px; flex-wrap:wrap; }
 .brand{ display:flex; align-items:center; gap:9px; font-size:19px; font-weight:700; letter-spacing:0; }
-.brand .bird{ font-size:22px; }
+.brand .brand-icon{ font-size:22px; }
 .brand em{ color:var(--accent); font-style:normal; }
 .grow{ flex:1; }
 .livepill{ display:inline-flex; align-items:center; gap:7px; padding:5px 12px; border-radius:999px; font-size:13px; font-weight:600;

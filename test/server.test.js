@@ -54,11 +54,11 @@ test('forwarded client identity requires both loopback transport and the private
 test('PUBLIC_ORIGIN accepts only a canonical HTTP(S) origin', () => {
   assert.equal(parsePublicOrigin(undefined), null);
   assert.equal(parsePublicOrigin(''), null);
-  assert.equal(parsePublicOrigin('https://tweet.lanny.me').origin, 'https://tweet.lanny.me');
-  assert.equal(parsePublicOrigin('http://localhost:8787').origin, 'http://localhost:8787');
-  for (const value of ['https://tweet.lanny.me/', 'https://user:password@tweet.lanny.me',
-    'https://tweet.lanny.me/a', 'https://tweet.lanny.me?x=1', 'file:///tmp/panel',
-    'https://tweet.lanny.me#fragment', 'tweet.lanny.me', ' https://tweet.lanny.me']) {
+  assert.equal(parsePublicOrigin('https://watcher.example.test').origin, 'https://watcher.example.test');
+  assert.equal(parsePublicOrigin('http://localhost:8788').origin, 'http://localhost:8788');
+  for (const value of ['https://watcher.example.test/', 'https://user:password@watcher.example.test',
+    'https://watcher.example.test/a', 'https://watcher.example.test?x=1', 'file:///tmp/panel',
+    'https://watcher.example.test#fragment', 'watcher.example.test', ' https://watcher.example.test']) {
     assert.throws(() => parsePublicOrigin(value), /PUBLIC_ORIGIN/);
   }
 });

@@ -117,11 +117,11 @@ test('sessions issued far in the future fail closed after a clock rollback', () 
 
 test('sessions are scoped to the configured origin and reject legacy tokens after migration', () => {
   const local = auth.makeSession();
-  const isolated = auth.makeSession('https://tweet.lanny.me');
+  const isolated = auth.makeSession('https://watcher.example.test');
   assert.equal(auth.verifySession(local), true);
-  assert.equal(auth.verifySession(local, 'https://tweet.lanny.me'), false);
-  assert.equal(auth.verifySession(isolated, 'https://tweet.lanny.me'), true);
-  assert.equal(auth.verifySession(isolated, 'https://lanny.me'), false);
+  assert.equal(auth.verifySession(local, 'https://watcher.example.test'), false);
+  assert.equal(auth.verifySession(isolated, 'https://watcher.example.test'), true);
+  assert.equal(auth.verifySession(isolated, 'https://example.test'), false);
   assert.equal(auth.verifySession(isolated), false);
 });
 

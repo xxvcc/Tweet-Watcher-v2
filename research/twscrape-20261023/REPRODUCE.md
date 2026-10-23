@@ -20,7 +20,7 @@
 以下从本报告目录执行。先设置复现路径：
 
 ```sh
-cd /www/tweet-watcher/research/twscrape-20261023
+cd /www/tweet-watcher-v2/research/twscrape-20261023
 TWS_RESEARCH_PY=/tmp/twscrape-research-venv-20261023/bin/python
 TWS_RESEARCH_MAIN=/tmp/twscrape-research-20261023
 TWS_RESEARCH_TAG=/tmp/twscrape-repro-v0201
@@ -71,6 +71,6 @@ unshare --net runuser -u nobody -- env TWS_TELEMETRY=0 PYTHONDONTWRITEBYTECODE=1
 
 ## 其他证据的边界
 
-- 现有 Node 解析器检查调用 `lib/bird-timeline.mjs` 的 `parseTimelinePage`，输入固定上游快照 `tests/mocked-data/` 下四份 JSON，记录接受条数或拒绝原因。没有通过该模块发出网络请求。
+- 历史 Node 解析器对照调用第一代的 [lib/bird-timeline.mjs](https://github.com/xxvcc/Tweet-Watcher/blob/v3.5.0/lib/bird-timeline.mjs) 的 `parseTimelinePage`，输入固定上游快照 `tests/mocked-data/` 下四份 JSON，记录接受条数或拒绝原因。该对照不依赖 v2 当前代码；如需复现，请在独立第一代检出目录执行，不能以 v2 当前解析器冒充历史结果。没有通过该模块发出网络请求。
 - OSV 文件是对研究环境已安装 29 个 Python 包版本的批量查询摘要；不是原始漏洞库快照。查询结果会随漏洞库变化，未完整覆盖 wheel 捆绑原生组件。
 - JSON 结果与日志为原始观察或汇总；SHA256 清单可检测后续文件变化，不代表来源签名或安全认证。

@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const EventEmitter = require('events');
 const http = require('node:http');
-const origin = 'https://tweet.lanny.me';
+const origin = 'https://watcher.example.test';
 const proxyToken = 'synthetic-proxy-token-for-tests-only';
 process.env.PUBLIC_ORIGIN = origin;
 process.env.TRUST_PROXY_TOKEN = proxyToken;
@@ -23,7 +23,7 @@ inject('../lib/store', {
 });
 inject('../lib/state', { bus: new EventEmitter(), getStatus: () => ({ running: true }), getLogs: () => [], log: () => {} });
 inject('../lib/config', { getConfig: () => ({ paused: false, accounts: [] }) });
-inject('../lib/bird', {});
+inject('../lib/twscrape', {});
 inject('../lib/worker', {});
 const auth = require('../lib/auth');
 auth.verifyPassword = async () => true;
@@ -41,7 +41,7 @@ test.after(async () => {
 });
 function headers(extra = {}) {
   return {
-    host: 'tweet.lanny.me', origin, 'x-tweet-watcher-proxy-token': proxyToken,
+    host: 'watcher.example.test', origin, 'x-tweet-watcher-proxy-token': proxyToken,
     'x-forwarded-proto': 'https', ...extra,
   };
 }
@@ -68,8 +68,8 @@ test('configured HTTPS origin requires canonical Host and authenticated TLS forw
   const accepted = await request(`${base}/api/session`, { headers: headers() });
   assert.equal(accepted.status, 200);
   for (const [extra, expected] of [
-    [{ host: 'lanny.me' }, 421],
-    [{ host: 'lanny.me', 'x-forwarded-host': 'tweet.lanny.me' }, 421],
+    [{ host: 'example.test' }, 421],
+    [{ host: 'example.test', 'x-forwarded-host': 'watcher.example.test' }, 421],
     [{ 'x-tweet-watcher-proxy-token': 'wrong-token' }, 403],
     [{ 'x-forwarded-proto': 'http' }, 403],
   ]) {
@@ -80,7 +80,7 @@ test('configured HTTPS origin requires canonical Host and authenticated TLS forw
 });
 
 test('unsafe requests reject same-site sibling origins, opaque origins and absent Origin', async () => {
-  for (const requestOrigin of ['https://lanny.me', 'https://evil.lanny.me', 'null', 'https://tweet.lanny.me.evil.example', '']) {
+  for (const requestOrigin of ['https://example.test', 'https://evil.example.test', 'null', 'https://watcher.example.test.evil.example', '']) {
     const requestHeaders = headers({ origin: requestOrigin });
     if (!requestOrigin) delete requestHeaders.origin;
     for (const endpoint of ['/api/login', '/api/setup', '/api/logout']) {

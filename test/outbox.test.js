@@ -81,7 +81,7 @@ test('UTF-8 JSON size is bounded independently of message count before any disk 
   assert.ok(Buffer.byteLength(JSON.stringify(committed, null, 2)) < MAX_BYTES);
 });
 
-test('invalid stored queues fail closed without overwriting the file or migrating legacy IDs', () => {
+test('invalid stored queues fail closed without overwriting the file', () => {
   for (const mutate of [
     (value) => { value.accounts.alice.pending[0].id = 'invalid'; },
     (value) => { value.accounts.alice.destination = null; },
@@ -101,7 +101,7 @@ test('invalid stored queues fail closed without overwriting the file or migratin
     first.box.capture('alice', tweets(2, 1), BINDING, null);
     const corrupt = structuredClone(first.files.get('delivery_state.json'));
     mutate(corrupt);
-    const restarted = harness([['delivery_state.json', corrupt], ['sent_ids.json', { alice: ['1'] }]]);
+    const restarted = harness([['delivery_state.json', corrupt]]);
     assert.throws(() => restarted.box.flush(), { code: 'DATA_CORRUPT' });
     assert.equal(restarted.writes.length, 0);
     assert.deepEqual(restarted.files.get('delivery_state.json'), corrupt);
@@ -130,9 +130,9 @@ test('a failed ack survives a crash as pending and cannot erase a different in-f
   assert.equal(files.get('delivery_state.json').accounts.bob.pending.length, 1);
 });
 
-test('a durable initialization marker prevents silent remigration after queue loss and restart', () => {
-  const { box, store, files, writes } = harness([['sent_ids.json', { alice: ['1'] }]]);
-  box.flush();
+test('a durable initialization marker prevents silent reinitialization after queue loss and restart', () => {
+  const { box, store, files, writes } = harness();
+  box.baseline('alice', ['1']);
   box.capture('alice', tweets(2, 1), BINDING, null);
   assert.deepEqual(files.get('delivery_state.initialized.json'), { version: 1 });
   files.delete('delivery_state.json');
@@ -144,40 +144,58 @@ test('a durable initialization marker prevents silent remigration after queue lo
 });
 
 test('state is written before its marker and interrupted marker creation is recoverable before sends', () => {
-  const { box, store, files } = harness([['sent_ids.json', { alice: ['1'] }]]);
+  const { box, store, files } = harness();
   box.flush();
   const write = store.writeJSON;
   store.writeJSON = (name, value) => {
     if (name === 'delivery_state.initialized.json') throw new Error('synthetic marker failure');
     write(name, value);
   };
-  assert.throws(() => box.capture('alice', tweets(2, 1, 'persisted before marker'), BINDING, null), { code: 'OUTBOX_WRITE' });
-  assert.equal(files.get('delivery_state.json').accounts.alice.pending[0].text, 'persisted before marker');
+  assert.throws(() => box.baseline('alice', ['1'], '1'), { code: 'OUTBOX_WRITE' });
+  assert.equal(files.get('delivery_state.json').accounts.alice.acquisitionWatermark, '1');
   assert.equal(files.has('delivery_state.initialized.json'), false);
   assert.equal(box.ready(), false);
+  assert.throws(() => box.capture('alice', tweets(2, 1), BINDING, null, '2'), /未落盘事务/);
   const restarted = createOutbox(store, 200);
   assert.throws(() => restarted.flush(), { code: 'OUTBOX_WRITE' });
   assert.equal(restarted.ready(), false);
   store.writeJSON = write;
   restarted.flush();
   assert.equal(restarted.ready(), true);
-  assert.equal(restarted.get('alice').pending[0].text, 'persisted before marker');
+  assert.equal(restarted.get('alice').acquisitionWatermark, '1');
   assert.deepEqual(files.get('delivery_state.initialized.json'), { version: 1 });
+  restarted.capture('alice', tweets(2, 1, 'captured after marker repair'), BINDING, null, '2');
+  assert.equal(restarted.get('alice').pending[0].text, 'captured after marker repair');
 });
 
-test('legacy casing variants merge safely and preserve the highest ID even beyond the history cap', () => {
-  const { box } = harness([['sent_ids.json', {
-    Alice: ['9000', ...tweets(1, 300).map((tweet) => tweet.id)],
-    alice: ['2', '9001'],
-    ALICE: [],
-  }]]);
+test('pre-v2 dedup state is refused without importing, overwriting or treating it as a fresh instance', () => {
+  for (const value of [{ Alice: ['9000'], alice: ['2'] }, {}, null, ['invalid']]) {
+    const { box, files, writes } = harness([['sent_ids.json', value]]);
+    assert.throws(() => box.flush(), (error) => error.code === 'DATA_CORRUPT' && /显式迁移/.test(error.message));
+    assert.equal(writes.length, 0);
+    assert.equal(files.has('delivery_state.json'), false);
+    assert.equal(files.has('delivery_state.initialized.json'), false);
+    assert.deepEqual(files.get('sent_ids.json'), value);
+  }
+  const box = createOutbox({
+    readState(name) { return { status: name === 'sent_ids.json' ? 'corrupt' : 'missing' }; },
+    writeJSON() { assert.fail('must not write on rejected state'); },
+  }, 200);
+  assert.throws(() => box.flush(), { code: 'DATA_CORRUPT' });
+});
+
+test('existing native schema one remains readable without an acquisition checkpoint', () => {
+  const state = { version: 1, accounts: {
+    alice: { sent: ['1'], watermark: '1', pending: [], destination: null, gap: null },
+  } };
+  const { box, store } = harness([['delivery_state.json', state]]);
   box.flush();
-  assert.equal(box.get('alice').sent.length, 200);
-  assert.equal(box.get('ALICE').watermark, '9001');
-  assert.ok(box.get('Alice').sent.includes('9001'));
-  box.capture('ALICE', tweets(9002, 1), BINDING, null);
-  box.prune(new Set(['Alice']));
-  assert.equal(box.get('alice').pending[0].id, '9002');
+  assert.equal(box.get('ALICE').watermark, '1');
+  box.capture('Alice', tweets(2, 1), BINDING, null, '2');
+  const restarted = createOutbox(store, 200);
+  restarted.flush();
+  assert.equal(restarted.get('alice').acquisitionWatermark, '2');
+  assert.equal(restarted.get('ALICE').pending[0].id, '2');
 });
 
 test('complete long-form text and relationship IDs survive durable storage and restart', () => {

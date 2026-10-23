@@ -1,6 +1,6 @@
 # Tweet Watcher v2
 
-使用 **twscrape 采集 X、通过 Telegram 推送**的中文监控面板。当前开发版本 **0.1.0-beta.1**，已接通真实采集、分页追赶、管理界面与持久发送队列。默认关闭外部请求，支持独立的只读验证模式。
+使用 **twscrape 采集 X、通过 Telegram 推送**的中文监控面板。当前开发版本 **0.1.0-beta.2**，已接通真实采集、分页追赶、管理界面与持久发送队列。默认关闭外部请求，支持独立的只读验证模式。
 
 源自 [Tweet-Watcher v3.5.0](https://github.com/xxvcc/Tweet-Watcher/releases/tag/v3.5.0)，保留历史与 MIT 归属。第一代继续维护；v2 使用独立目录、凭据、状态与端口。这里的 v2 表示架构代际。
 
@@ -50,8 +50,8 @@ X 网页接口可能改变，Cookie 可能失效；错误会明确显示，不�
 
 - [开发与配置](docs/DEVELOPMENT.md)、[验证记录](docs/VERIFICATION.md)
 - [第二代部署说明](deploy/v2/README.md)、[生产迁移与回退](docs/MIGRATION.md)
-- [工作交接](docs/SESSION_HANDOFF.md)、[原始开发方案](docs/V2_DEVELOPMENT_PLAN.md)
+- [工作交接](docs/SESSION_HANDOFF.md)、[开发方案与后续范围](docs/V2_DEVELOPMENT_PLAN.md)
 - [twscrape 研究](research/twscrape-20261023/README.md)、[采集协议与依赖](collector/README.md)
 - [变更记录](CHANGELOG.md)、[安全报告](SECURITY.md)、[CI 状态](.github/CI.md)
 
-第一代文档保存在 `docs/LEGACY_V1_*`；`deploy/` 根目录的旧配置仍属于第一代。采用 [MIT License](LICENSE)。twscrape 的许可证和固定源码位于 `collector/vendor/`。
+第一代历史文档和部署文件请到 [第一代仓库](https://github.com/xxvcc/Tweet-Watcher/tree/v3.5.0) 查看。本目录仅保留第二代运行代码与部署模板。采用 [MIT License](LICENSE)。twscrape 的许可证和固定源码位于 `collector/vendor/`。

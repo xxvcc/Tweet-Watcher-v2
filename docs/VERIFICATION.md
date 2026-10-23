@@ -1,14 +1,14 @@
 # v2 验证记录
 
-日期：2026-10-23。目标版本：`0.1.0-beta.1`。本文件区分实际执行结果、离线模拟和未执行的生产操作。
+日期：2026-10-23。目标版本：`0.1.0-beta.2`。本文件区分本次清理后的验证、beta.1 历史实测和未执行的生产操作。
 
 ## 自动化结果
 
 | 检查 | 环境 | 结果 |
 |---|---|---|
-| JS 语法检查 | Node.js 24.18.0 | 37 个文件通过 |
-| Node 完整测试 | Node.js 24.18.0 | 212/212 通过，0 失败、0 跳过 |
-| Node 完整测试 | Node.js 22.23.4 | 212/212 通过，0 失败、0 跳过 |
+| JS 语法检查 | Node.js 24.18.0 | 33 个文件通过 |
+| Node 完整测试 | Node.js 24.18.0 | 191/191 通过，0 失败、0 跳过 |
+| Node 完整测试 | Node.js 22.23.4 | 191/191 通过，0 失败、0 跳过 |
 | Python 采集器测试 | Python 3.13.5 / 独立 `.venv` | 36/36 通过，0 失败、0 跳过 |
 | 依赖一致性 | `pip check` | 通过 |
 | npm 生产依赖公告检查 | `npm audit --omit=dev` | 本次数据库返回 0 个已知漏洞 |
@@ -25,7 +25,16 @@ npm run verify
 npx --yes --package=node@22.23.4 node --test
 ```
 
-本机日志：`/tmp/tweet-watcher-v2-acceptance.log`、`/tmp/tweet-watcher-v2-acceptance-node22.log`。日志不包含真实 Cookie 或 Telegram token。
+本机日志：`/tmp/tweet-watcher-v2-cleanup-verify.log`、`/tmp/tweet-watcher-v2-cleanup-node22.log`。测试使用合成凭据，未读取真实 Cookie 或 Telegram token。
+
+beta.1 的 Node 测试为 212 项；本次删除 Bird 解析器、执行器和旧迁移功能对应的测试，将仍适用的队列、配置、权限和运行边界测试改为验证 twscrape。现有测试同时检查旧模式启动失败、旧 API 返回 404、未知执行器字段不会持久化，以及原生 v2 队列继续读取和恢复。测试计数变化不表示对真实 X 的新增验证。
+
+## 清理核验
+
+- 运行源码、前端、脚本、package.json 和锁文件均无 Bird 或旧运行模式依赖；重新安装 Node 依赖后，完整依赖树无 Bird。
+- 第一代部署模板和文档副本已移除；保留 v2 模板、MIT 归属和 Git 历史。Git 仅保留 v2 的 origin。
+- 研究资料保留历史选型语境，SHA256SUMS 全部通过；历史变更说明和负向测试中的旧名称是有意保留的记录。
+- 配置只保存当前字段；已有 v2 队列不重建基线。仅存在第一代 ID 文件时明确拒绝自动迁移，避免误丢历史。
 
 ## 覆盖的关键失败场景
 
@@ -35,14 +44,16 @@ npx --yes --package=node@22.23.4 node --test
 - 采集检查点与最大已观察 ID 分离。置顶 500 / 普通 300 后出现普通 350 的回归确认不会漏推；第三方模块记录不按监控作者发送。
 - 较小的新推文与已有较大 ID 队列正确合并；无新投递时检查点仍可推进；写盘失败、重启、损坏文件和目标变更的行为可核验。
 - 引用、回复、转发、编辑 ID 和完整长正文跨队列重启保留，Telegram 文本长度受限。
-- 默认关闭请求、只读禁止调度和发送、旧 Bird 仅限 legacy-live、接口与最底层出口均有守卫。
+- 默认关闭请求、只读禁止调度和发送；仅支持 development / read-only / live，接口与最底层出口均有守卫。
 - 凭据经 stdin 传递，URL/HTTPS/主机限制、错误脱敏、总截止时间和协议大小限制。
 - 真实 curl + 本机临时 TLS 服务验证：Cookie/CSRF 作用域、连接复用、重定向不跟随、超大响应实际中止；不是只检查 mock 参数。
 - UTF-8 中文及 emoji 大文本穿过真实 Python 子进程时不被不必要的 ASCII 转义放大。
 
 Telegram 发送与重启重试采用模拟发送端，没有对真实 Bot/Chat 发送测试消息。
 
-## 真实 X 只读验证
+## beta.1 的真实 X 只读验证（历史记录）
+
+以下为清理前已完成的实测。本次 beta.2 清理没有再次请求真实 X 或发送 Telegram；采集器源码、解析器和固定依赖未更改。
 
 经用户授权，由进程直接读取正在运行的第一代 X Cookie，只传入采集进程，不在终端、报告或仓库显示。验证数据在独立私有 `/var/lib/tweet-watcher-v2-validation`，不写第一代状态。
 
@@ -72,13 +83,15 @@ BROWSER_SMOKE_ARTIFACTS=/tmp/v2-browser-artifacts \
 node scripts/browser-smoke.cjs
 ```
 
-本机截图位于 `/tmp/v2-browser-final/`。独立预览启动在 `127.0.0.1:8788`，临时 unit 为 `tweet-watcher-v2-preview.service`，采用 DynamicUser、0700 私有状态目录和 `read-only` 模式。没有导入生产配置或凭据。首次设置令牌只从自己的终端查看：
+本次 beta.2 浏览器截图位于 `/tmp/v2-browser-cleanup/`。独立预览启动在 `127.0.0.1:8788`，临时 unit 为 `tweet-watcher-v2-preview.service`，采用 DynamicUser、0700 私有状态目录和 `read-only` 模式。没有导入生产配置或凭据。首次设置令牌只从自己的终端查看：
 
 ```sh
 journalctl -u tweet-watcher-v2-preview -n 30 --no-pager
 ```
 
 预览是临时服务，不随服务器重启自动恢复。可通过 VS Code 的“端口”面板转发 8788 访问。它不是第一代生产域名，也没有生产发送权。
+
+清理后已重启该预览，确认页面返回 HTTP 200、资源版本为 beta.2，仍监听本机 8788 并保持 read-only。第一代服务仍为 active，第一代工作区保持干净。
 
 ## 尚未验证或有意保留的限制
 
