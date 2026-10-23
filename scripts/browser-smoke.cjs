@@ -11,6 +11,7 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
 const root = path.resolve(__dirname, '..');
+const disableSse = process.env.BROWSER_SMOKE_DISABLE_SSE === '1';
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-v2-browser-'));
 const artifacts = path.resolve(process.env.BROWSER_SMOKE_ARTIFACTS
   || fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-v2-browser-artifacts-')));
@@ -60,6 +61,7 @@ async function main() {
     const pathname = new URL(url).pathname;
     requests.push(pathname);
     if (pathname.startsWith('/api/test/')) { forbidden.push(pathname); return route.abort(); }
+    if (disableSse && pathname === '/api/stream') return route.abort();
     return route.continue();
   });
   const page = await context.newPage();
@@ -72,6 +74,16 @@ async function main() {
   await page.locator('#auth-setup-token').fill(token);
   await page.locator('#auth-submit').click();
   await page.locator('#dash').waitFor({ state: 'visible' });
+  if (disableSse) {
+    await Promise.all([
+      page.waitForResponse((response) => response.url().endsWith('/api/status') && response.status() === 200
+        && requests.filter((url) => url === '/api/status').length >= 2, { timeout: 15000 }),
+      page.waitForResponse((response) => response.url().endsWith('/api/logs') && response.status() === 200
+        && requests.filter((url) => url === '/api/logs').length >= 2, { timeout: 15000 }),
+    ]);
+    assert.ok(requests.filter((url) => url === '/api/status').length >= 2, 'status polling continues without SSE');
+    assert.ok(requests.filter((url) => url === '/api/logs').length >= 2, 'log polling continues without SSE');
+  }
   assert.match(await page.locator('#runtime-notice').textContent(), /只读验证/);
   assert.equal(await page.locator('#btn-test-tg').isDisabled(), true);
   // The now-expired synthetic setup nonce is an internal log entry; omit it
@@ -132,6 +144,7 @@ async function main() {
   assert.deepEqual(forbidden, []);
   assert.equal(requests.some((url) => url.startsWith('/api/test/')), false);
   console.log(JSON.stringify({ ok: true, desktop: '1440x1000', mobile: ['390x844', '320x740'],
+    streamMode: disableSse ? 'http-polling' : 'sse',
     checks: ['setup', 'login', 'logout', 'config-save', 'collector-detection', 'read-only-policy', 'responsive-layout'],
     clientErrors: errors.length, externalRequests: forbidden.length, artifacts }));
 }

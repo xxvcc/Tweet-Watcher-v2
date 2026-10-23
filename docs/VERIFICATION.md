@@ -7,8 +7,8 @@
 | 检查 | 环境 | 结果 |
 |---|---|---|
 | JS 语法检查 | Node.js 24.18.0 | 33 个文件通过 |
-| Node 完整测试 | Node.js 24.18.0 | 191/191 通过，0 失败、0 跳过 |
-| Node 完整测试 | Node.js 22.23.4 | 191/191 通过，0 失败、0 跳过 |
+| Node 完整测试 | Node.js 24.18.0 | 199/199 通过，0 失败、0 跳过 |
+| Node 完整测试 | Node.js 22.23.4 | 199/199 通过，0 失败、0 跳过 |
 | Python 采集器测试 | Python 3.13.5 / 独立 `.venv` | 36/36 通过，0 失败、0 跳过 |
 | 依赖一致性 | `pip check` | 通过 |
 | npm 生产依赖公告检查 | `npm audit --omit=dev` | 本次数据库返回 0 个已知漏洞 |
@@ -25,9 +25,11 @@ npm run verify
 npx --yes --package=node@22.23.4 node --test
 ```
 
-本机日志：`/tmp/tweet-watcher-v2-cleanup-verify.log`、`/tmp/tweet-watcher-v2-cleanup-node22.log`。测试使用合成凭据，未读取真实 Cookie 或 Telegram token。
+最新本机日志：`/tmp/tweet-watcher-v2-public-verify.log`、`/tmp/tweet-watcher-v2-public-node22.log`。测试使用合成凭据，未读取真实 Cookie 或 Telegram token。
 
 beta.1 的 Node 测试为 212 项；本次删除 Bird 解析器、执行器和旧迁移功能对应的测试，将仍适用的队列、配置、权限和运行边界测试改为验证 twscrape。现有测试同时检查旧模式启动失败、旧 API 返回 404、未知执行器字段不会持久化，以及原生 v2 队列继续读取和恢复。测试计数变化不表示对真实 X 的新增验证。
+
+清理后的首次验证为 191 项；随后为临时公网入口增加前端轮询兜底及 8 项回归，当前为 199 项。覆盖无状态帧、断流恢复、超时、单飞、未保存草稿保护、配置同步、401 和旧会话结果隔离。
 
 ## 清理核验
 
@@ -83,15 +85,19 @@ BROWSER_SMOKE_ARTIFACTS=/tmp/v2-browser-artifacts \
 node scripts/browser-smoke.cjs
 ```
 
-本次 beta.2 浏览器截图位于 `/tmp/v2-browser-cleanup/`。独立预览启动在 `127.0.0.1:8788`，临时 unit 为 `tweet-watcher-v2-preview.service`，采用 DynamicUser、0700 私有状态目录和 `read-only` 模式。没有导入生产配置或凭据。首次设置令牌只从自己的终端查看：
+最新浏览器验证分别覆盖正常 SSE 与禁用 SSE 两种情况，后者确认状态与日志至少完成两轮 HTTP 读取，设置、保存、登录和桌面/手机布局同样通过。截图位于 `/tmp/v2-browser-public-sse/` 和 `/tmp/v2-browser-public-poll/`。复现禁用 SSE 的情况时，在上述命令增加 `BROWSER_SMOKE_DISABLE_SSE=1`。
+
+独立预览启动在 `127.0.0.1:8788`，临时 unit 为 `tweet-watcher-v2-preview.service`，采用 DynamicUser、0700 私有状态目录和 `read-only` 模式。没有导入生产配置或凭据。首次设置令牌只从自己的终端查看：
 
 ```sh
 journalctl -u tweet-watcher-v2-preview -n 30 --no-pager
 ```
 
-预览是临时服务，不随服务器重启自动恢复。可通过 VS Code 的“端口”面板转发 8788 访问。它不是第一代生产域名，也没有生产发送权。
+预览是临时服务，不随服务器重启自动恢复。最初通过 VS Code 转发 8788 访问，之后按用户要求增加固定来源的临时 HTTPS 入口，当前应从该入口访问，详见[工作交接](SESSION_HANDOFF.md)。它不是第一代生产域名，也没有生产发送权。
 
 清理后已重启该预览，确认页面返回 HTTP 200、资源版本为 beta.2，仍监听本机 8788 并保持 read-only。第一代服务仍为 active，第一代工作区保持干净。
+
+公网入口额外验证了 HTTPS 页面及安全响应头、HTTP 跳转、未登录私有 API 返回 401、跨来源登录和缺失设置令牌被拒绝；真实 Chromium 确认公网首次设置页面显示且无脚本错误。未通过公网创建密码或导入凭据；登录后的轮询功能使用上述独立合成浏览器实例验证。
 
 ## 尚未验证或有意保留的限制
 

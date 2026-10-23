@@ -33,13 +33,18 @@
   // 这几个接口的 401 是业务语义（密码错误 / 未登录探测），不应触发跳转
   const KEEP_ON_401 = new Set(['api/session', 'api/login', 'api/setup']);
 
-  async function api(method, path, body) {
+  async function api(method, path, body, request = {}) {
     const opts = { method, credentials: 'same-origin', headers: {} };
+    if (request.signal) opts.signal = request.signal;
     if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
     if (method !== 'GET') opts.headers['x-csrf'] = getCookie('__Host-tw_csrf') || getCookie('tw_csrf');
     const res = await fetch(path, opts);
     let data = null; try { data = await res.json(); } catch (_) {}
+    if (request.generation != null && (!panelActive || request.generation !== panelGeneration)) {
+      throw new Error('已忽略旧会话响应');
+    }
     if (res.status === 401 && !KEEP_ON_401.has(path)) {
+      stopPanelUpdates();
       location.reload(); // 会话已失效：回登录页，而不是让面板停在过期数据上
       throw new Error('会话已失效，请重新登录');
     }
@@ -90,6 +95,7 @@
   // ---------- 认证 ----------
   let mode = 'login';
   function showAuth(needSetup) {
+    stopPanelUpdates();
     mode = needSetup ? 'setup' : 'login';
     $('dash').classList.add('hidden'); $('settings').classList.add('hidden');
     $('btn-settings').setAttribute('aria-expanded', 'false');
@@ -133,6 +139,8 @@
 
   // ---------- 数据 ----------
   let es = null;
+  let panelActive = false;
+  let panelGeneration = 0;
   let statusData = { accounts: {}, running: false };
   let accountsCfg = [];
   let configRevision = null;
@@ -149,11 +157,16 @@
   const feedSeen = new Set(); // 活动流去重键（防 SSE 重连回放重复）
 
   async function startPanel() {
+    stopPanelUpdates();
+    const generation = panelGeneration;
     // 配置加载成功后再切换视图；失败时登录区仍可显示错误，不会留下空白面板和未处理拒绝。
     await loadConfig();
+    if (generation !== panelGeneration) return;
+    panelActive = true;
     $('auth').classList.add('hidden');
     $('dash').classList.remove('hidden');
     renderAll();
+    pollPanel();
     try { connectStream(); }
     catch (e) {
       $('livepill').className = 'livepill off';
@@ -238,8 +251,10 @@
   }
 
   async function loadConfig(fromStream) {
+    const generation = panelGeneration;
     const sequence = ++configLoadSequence;
-    const c = await api('GET', 'api/config');
+    const c = await api('GET', 'api/config', undefined, fromStream ? { generation } : {});
+    if (generation !== panelGeneration) return false;
     const loadedRevision = Number.isSafeInteger(c.configRevision) ? c.configRevision : null;
     const signature = configSignature(c);
     // GET 发出后用户仍可能开始编辑或保存；流同步不能在响应回来时覆盖这些新输入。
@@ -293,21 +308,23 @@
     if (Number.isSafeInteger(expectedRevision) && remoteConfigPending && remoteConfigRevision === expectedRevision) return;
     configReloadRequested = true;
     if (configReloadInFlight) return;
+    const generation = panelGeneration;
     configReloadInFlight = true;
     try {
       do {
         configReloadRequested = false;
         try {
           const applied = await loadConfig(true);
+          if (generation !== panelGeneration) return;
           if (applied) renderAll();
           // 响应等待期间可能又收到更高 revision；即使本次因草稿保护未应用，
           // 也要再核对一次已排队的更新，不能把最后一个状态帧静默丢掉。
           if (!applied && !configReloadRequested) return;
         }
-        catch (e) { toast('配置刷新失败：' + e.message, 'err'); return; }
+        catch (e) { if (generation === panelGeneration) toast('配置刷新失败：' + e.message, 'err'); return; }
       } while (configReloadRequested);
     }
-    finally { configReloadInFlight = false; }
+    finally { if (generation === panelGeneration) configReloadInFlight = false; }
   }
 
   // ---------- 顶栏 / 指标 ----------
@@ -509,12 +526,73 @@
 
   function renderAll() { renderTop(); renderStats(); renderCards(); }
 
-  // ---------- SSE ----------
+  // ---------- 实时更新：SSE 优先，不支持流式响应的代理使用 HTTP 轮询 ----------
   let streamRetryTimer = null;
   let streamRetryMs = 1000;
   let streamProbeInFlight = false;
+  let streamHealthy = false;
+  let streamVersion = 0;
+  let pollTimer = null;
+  let pollRequest = null;
+  let pollTimeout = null;
+  function stopPanelUpdates() {
+    panelActive = false;
+    panelGeneration++;
+    streamHealthy = false;
+    streamVersion++;
+    configReloadInFlight = false;
+    configReloadRequested = false;
+    clearTimeout(pollTimer); pollTimer = null;
+    clearTimeout(pollTimeout); pollTimeout = null;
+    clearTimeout(streamRetryTimer); streamRetryTimer = null;
+    if (pollRequest) pollRequest.abort();
+    pollRequest = null;
+    if (es) es.close();
+    es = null;
+    streamRetryMs = 1000;
+  }
+  function schedulePoll() {
+    if (!panelActive || pollTimer) return;
+    pollTimer = setTimeout(() => { pollTimer = null; pollPanel(); }, 5000);
+  }
+  function applyStatus(next, syncConfig) {
+    if (!next || typeof next !== 'object' || Array.isArray(next)) return;
+    statusData = { ...next, accounts: next.accounts || {} };
+    const nextRevision = Number.isSafeInteger(statusData.configRevision) ? statusData.configRevision : null;
+    if (syncConfig && configRevision != null && nextRevision != null && nextRevision !== configRevision) reloadConfigFromStream(nextRevision);
+    renderAll();
+  }
+  async function pollPanel() {
+    if (!panelActive || pollRequest) return;
+    if (streamHealthy) { schedulePoll(); return; }
+    const generation = panelGeneration, version = streamVersion;
+    const controller = new AbortController();
+    pollRequest = controller;
+    pollTimeout = setTimeout(() => controller.abort(), 10000);
+    const request = { generation, signal: controller.signal };
+    try {
+      const [snapshot, recent] = await Promise.all([
+        api('GET', 'api/status', undefined, request),
+        api('GET', 'api/logs', undefined, request),
+      ]);
+      // SSE 可能在 HTTP 请求期间恢复；旧快照不能覆盖较新的流事件或新登录会话。
+      if (!panelActive || generation !== panelGeneration || version !== streamVersion || streamHealthy) return;
+      if (snapshot.status) applyStatus({ ...snapshot.status, runtime: snapshot.runtime || snapshot.status.runtime, paused: snapshot.paused ?? snapshot.status.paused }, true);
+      // 服务端返回 200 条，界面只保留最近 60 条；限制回放避免挤出日志去重窗口。
+      if (Array.isArray(recent.logs)) recent.logs.slice(-60).forEach(pushFeed);
+    } catch (_) { /* 短暂网络失败由下一轮重试；401 已停止更新并返回登录页。 */ }
+    finally {
+      // 某一个请求失败时也取消另一个，避免下一轮与残留 HTTP 请求重叠。
+      controller.abort();
+      if (pollRequest === controller) {
+        pollRequest = null;
+        clearTimeout(pollTimeout); pollTimeout = null;
+      }
+      if (panelActive && generation === panelGeneration) schedulePoll();
+    }
+  }
   function scheduleStreamReconnect() {
-    if (streamRetryTimer) return;
+    if (!panelActive || streamRetryTimer) return;
     if (es) es.close();
     streamRetryTimer = setTimeout(() => {
       streamRetryTimer = null;
@@ -523,7 +601,9 @@
     streamRetryMs = Math.min(30000, streamRetryMs * 2);
   }
   function connectStream() {
+    if (!panelActive) return;
     if (es) es.close();
+    streamHealthy = false;
     let source;
     try { source = new EventSource('api/stream'); }
     catch (_) {
@@ -539,17 +619,20 @@
       streamRetryMs = 1000;
     };
     source.addEventListener('status', (e) => {
-      if (es !== source) return;
+      if (!panelActive || es !== source) return;
       try {
-        statusData = JSON.parse(e.data); statusData.accounts = statusData.accounts || {};
-        const nextRevision = Number.isSafeInteger(statusData.configRevision) ? statusData.configRevision : null;
-        if (configRevision != null && nextRevision != null && nextRevision !== configRevision) reloadConfigFromStream(nextRevision);
-        renderAll();
+        const next = JSON.parse(e.data);
+        if (!next || typeof next !== 'object' || Array.isArray(next)) return;
+        streamHealthy = true;
+        streamVersion++;
+        applyStatus(next, true);
       } catch (_) {}
     });
-    source.addEventListener('log', (e) => { if (es === source) { try { pushFeed(JSON.parse(e.data)); } catch (_) {} } });
+    source.addEventListener('log', (e) => { if (panelActive && es === source) { try { pushFeed(JSON.parse(e.data)); } catch (_) {} } });
     source.onerror = async () => {
-      if (es !== source) return;
+      if (!panelActive || es !== source) return;
+      streamHealthy = false;
+      schedulePoll();
       const pill = $('livepill'), txt = $('live-text');
       if (pill && txt) { pill.className = 'livepill off'; txt.textContent = '重连中'; }
       // 网络断开由 EventSource 自行重连；永久关闭还可能是 SSE 满载/反代错误，不能一律刷新页面。
@@ -558,7 +641,8 @@
       let authed = null;
       try { authed = !!(await api('GET', 'api/session')).authed; } catch (_) {}
       finally { streamProbeInFlight = false; }
-      if (authed === false) location.reload();
+      if (!panelActive || es !== source) return;
+      if (authed === false) { stopPanelUpdates(); location.reload(); }
       else scheduleStreamReconnect();
     };
   }
@@ -797,7 +881,7 @@
     const btn = $('logout');
     if (btn.disabled) return;
     btn.disabled = true;
-    try { await api('POST', 'api/logout'); location.reload(); }
+    try { await api('POST', 'api/logout'); stopPanelUpdates(); location.reload(); }
     catch (e) { toast('登出失败：' + e.message, 'err'); btn.disabled = false; }
   };
 

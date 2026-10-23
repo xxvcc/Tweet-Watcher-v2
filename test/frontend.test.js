@@ -191,17 +191,18 @@ async function loadApp(handler, options = {}) {
     addEventListener(type, fn) { this.listeners[type] = fn; }
     close() { this.readyState = FakeEventSource.CLOSED; }
   }
-  const timers = new Map(); let timerId = 0;
+  const timers = new Map(), timerDelays = new Map(); let timerId = 0;
   const location = { reloads: 0, reload() { this.reloads++; } };
   const EventSourceImpl = options.EventSource || FakeEventSource;
   const context = {
     document,
     location,
     EventSource: EventSourceImpl,
+    AbortController,
     localStorage: { getItem() { return null; }, setItem() {} },
     getComputedStyle: () => ({ getPropertyValue: () => 'disc', webkitTextSecurity: 'disc' }),
-    setTimeout(fn) { const id = ++timerId; timers.set(id, fn); return id; },
-    clearTimeout(id) { timers.delete(id); },
+    setTimeout(fn, delay) { const id = ++timerId; timers.set(id, fn); timerDelays.set(id, delay); return id; },
+    clearTimeout(id) { timers.delete(id); timerDelays.delete(id); },
     setInterval() { return ++timerId; },
     clearInterval() {},
     fetch: async (url, opts = {}) => { requests.push({ url, opts }); return handler(url, opts, requests); },
@@ -212,7 +213,7 @@ async function loadApp(handler, options = {}) {
   context.window = context;
   vm.runInNewContext(APP_SOURCE, context, { filename: 'public/app.js' });
   await settle();
-  return { context, document, ids, requests, EventSource: EventSourceImpl, timers };
+  return { context, document, ids, requests, EventSource: EventSourceImpl, timers, timerDelays };
 }
 
 const baseConfig = (revision = 10, overrides = {}) => ({
@@ -400,7 +401,7 @@ test('a synchronous EventSource construction failure leaves a usable panel and s
   }, { EventSource: BrokenEventSource });
   assert.equal(app.ids.get('auth').classList.contains('hidden'), true);
   assert.equal(app.ids.get('dash').classList.contains('hidden'), false);
-  assert.equal(app.timers.size, 1);
+  assert.deepEqual([...app.timerDelays.values()].sort((a, b) => a - b), [1000, 5000]);
 });
 
 test('a late collector detection result cannot overwrite a reopened form or its configuration', async () => {
@@ -480,4 +481,214 @@ test('logout network failure does not pretend success by reloading', async () =>
   assert.equal(app.context.location.reloads, 0);
   assert.equal(app.ids.get('logout').disabled, false);
   assert.equal(app.ids.get('toast').textContent, '登出失败：network unavailable');
+});
+
+async function runPollTimer(app) {
+  const entry = [...app.timerDelays].find(([, delay]) => delay === 5000);
+  assert.ok(entry, 'a polling retry is scheduled');
+  const [id] = entry;
+  const callback = app.timers.get(id);
+  app.timers.delete(id); app.timerDelays.delete(id);
+  callback();
+  await settle();
+}
+
+const snapshot = (pushesToday, extra = {}) => ({
+  status: { accounts: {}, running: false, pushesToday, ...extra },
+  paused: false,
+  runtime: { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false },
+});
+
+test('HTTP snapshots show status and bounded deduplicated logs without SSE or overwriting a settings draft', async () => {
+  let pushes = 3, revision = 10;
+  let config = baseConfig();
+  const logs = Array.from({ length: 200 }, (_, i) => ({ id: `log-${i}`, t: '2026-10-23T10:00:00Z', msg: `event ${i}` }));
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(config);
+    if (url === 'api/status') return response(snapshot(pushes, { configRevision: revision }));
+    if (url === 'api/logs') return response({ logs });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  assert.equal(app.ids.get('stat-pushes').textContent, '3');
+  assert.equal(app.ids.get('live-text').textContent, '只读验证');
+  assert.equal(app.ids.get('feed').children.length, 60);
+  assert.match(app.ids.get('feed').firstChild.textContent, /event 199/);
+  app.ids.get('btn-settings').onclick();
+  app.ids.get('tg_chat_id').value = 'unsaved draft';
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: app.ids.get('tg_chat_id') });
+  pushes = 4;
+  revision = 11;
+  config = baseConfig(revision, { tg_chat_id: 'remote change' });
+  await runPollTimer(app);
+  assert.equal(app.ids.get('stat-pushes').textContent, '4');
+  assert.equal(app.ids.get('tg_chat_id').value, 'unsaved draft');
+  assert.equal(app.requests.filter((r) => r.url === 'api/config').length, 2);
+  assert.match(app.ids.get('toast').textContent, /其他标签页已更新配置.*未保存内容已保留/);
+  assert.equal(app.ids.get('feed').children.length, 60);
+  assert.match(app.ids.get('feed').firstChild.textContent, /event 199/);
+});
+
+test('HTTP polling synchronizes a remote configuration revision when there is no local draft', async () => {
+  let config = baseConfig(10);
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(config);
+    if (url === 'api/status') return response(snapshot(0, { configRevision: config.configRevision }));
+    if (url === 'api/logs') return response({ logs: [] });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  config = baseConfig(11, { tg_chat_id: 'remote channel' });
+  await runPollTimer(app);
+  assert.equal(app.ids.get('tg_chat_id').value, 'remote channel');
+  assert.equal(app.requests.filter((r) => r.url === 'api/config').length, 2);
+  await runPollTimer(app);
+  assert.equal(app.requests.filter((r) => r.url === 'api/config').length, 2, 'matching revisions must not reload configuration');
+});
+
+test('a configuration refresh started by polling cannot overwrite a newer login', async () => {
+  let configReads = 0, statusReads = 0, resolveOldConfig;
+  const oldConfig = new Promise((resolve) => { resolveOldConfig = resolve; });
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') {
+      configReads++;
+      if (configReads === 2) return oldConfig;
+      return response(baseConfig(configReads === 1 ? 10 : 20, { tg_chat_id: configReads === 1 ? 'first session' : 'new session' }));
+    }
+    if (url === 'api/status') return response(snapshot(0, { configRevision: ++statusReads === 1 ? 11 : 20 }));
+    if (url === 'api/logs') return response({ logs: [] });
+    if (url === 'api/logout' || url === 'api/login') return response({ ok: true });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  assert.equal(configReads, 2);
+  await app.ids.get('logout').onclick();
+  app.ids.get('auth-pw').value = 'new-session-password';
+  await app.ids.get('auth-form').listeners.submit[0]({ preventDefault() {} });
+  await settle();
+  assert.equal(app.ids.get('tg_chat_id').value, 'new session');
+  resolveOldConfig(response(baseConfig(11, { tg_chat_id: 'stale old session' })));
+  await settle();
+  assert.equal(app.ids.get('tg_chat_id').value, 'new session');
+  assert.equal(app.context.location.reloads, 1);
+  assert.doesNotMatch(app.ids.get('toast').textContent, /配置刷新失败/);
+});
+
+test('SSE supersedes an in-flight snapshot and polling resumes only after the stream fails', async () => {
+  let resolveStatus, reads = 0;
+  const pendingStatus = new Promise((resolve) => { resolveStatus = resolve; });
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/status') return ++reads === 1 ? pendingStatus : response(snapshot(12));
+    if (url === 'api/logs') return response({ logs: [] });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  const stream = app.EventSource.instances[0];
+  stream.listeners.status({ data: JSON.stringify(snapshot(9).status) });
+  resolveStatus(response(snapshot(1)));
+  await settle();
+  assert.equal(app.ids.get('stat-pushes').textContent, '9');
+  await runPollTimer(app);
+  assert.equal(reads, 1, 'healthy SSE suppresses HTTP snapshot requests');
+  await stream.onerror();
+  await runPollTimer(app);
+  assert.equal(reads, 2);
+  assert.equal(app.ids.get('stat-pushes').textContent, '12');
+});
+
+test('repeated SSE failures cannot start overlapping HTTP polls', async () => {
+  let resolveStatus;
+  const pendingStatus = new Promise((resolve) => { resolveStatus = resolve; });
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/status') return pendingStatus;
+    if (url === 'api/logs') return response({ logs: [] });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  const stream = app.EventSource.instances[0];
+  await stream.onerror(); await stream.onerror();
+  await runPollTimer(app);
+  assert.equal(app.requests.filter((r) => r.url === 'api/status').length, 1);
+  assert.equal(app.requests.filter((r) => r.url === 'api/logs').length, 1);
+  resolveStatus(response(snapshot(6)));
+  await settle();
+  assert.equal(app.ids.get('stat-pushes').textContent, '6');
+  assert.equal([...app.timerDelays.values()].filter((delay) => delay === 5000).length, 1);
+});
+
+test('an opened stream without a status frame keeps polling and a ten-second HTTP timeout allows retry', async () => {
+  let reads = 0;
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/status') {
+      if (++reads > 1) return response(snapshot(8));
+      return new Promise((resolve, reject) => {
+        opts.signal.addEventListener('abort', () => reject(new Error('timeout')), { once: true });
+      });
+    }
+    if (url === 'api/logs') return response({ logs: [] });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  app.EventSource.instances[0].onopen();
+  const [timeoutId] = [...app.timerDelays].find(([, delay]) => delay === 10000);
+  const timeout = app.timers.get(timeoutId);
+  app.timers.delete(timeoutId); app.timerDelays.delete(timeoutId);
+  timeout();
+  await settle();
+  assert.equal(app.requests.find((r) => r.url === 'api/status').opts.signal.aborted, true);
+  await runPollTimer(app);
+  assert.equal(reads, 2, 'onopen alone must not mark the event stream healthy');
+  assert.equal(app.ids.get('stat-pushes').textContent, '8');
+});
+
+test('a polling 401 stops timers and SSE, aborts remaining requests, and returns to login once', async () => {
+  let resolveLogs;
+  const pendingLogs = new Promise((resolve) => { resolveLogs = resolve; });
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/status') return response({ error: '未登录' }, 401);
+    if (url === 'api/logs') return pendingLogs;
+    throw new Error(`unexpected request: ${url}`);
+  });
+  assert.equal(app.context.location.reloads, 1);
+  assert.equal(app.EventSource.instances[0].readyState, app.EventSource.CLOSED);
+  assert.equal([...app.timerDelays.values()].includes(5000), false);
+  assert.equal(app.requests.find((r) => r.url === 'api/logs').opts.signal.aborted, true);
+  resolveLogs(response({ logs: [{ id: 'late', t: '2026-10-23T10:00:00Z', msg: 'old session' }] }));
+  await settle();
+  assert.equal(app.ids.get('feed').children.length, 0);
+  assert.equal(app.context.location.reloads, 1);
+});
+
+test('logout cancels polls and late responses from the old session cannot affect a new login', async () => {
+  let resolveOldStatus, reads = 0;
+  const oldStatus = new Promise((resolve) => { resolveOldStatus = resolve; });
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/status') return ++reads === 1 ? oldStatus : response(snapshot(42));
+    if (url === 'api/logs') return response({ logs: [] });
+    if (url === 'api/logout' || url === 'api/login') return response({ ok: true });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  const oldStream = app.EventSource.instances[0];
+  await oldStream.onerror(); // a fallback timer now exists while the old request is pending
+  await app.ids.get('logout').onclick();
+  assert.equal(app.context.location.reloads, 1);
+  assert.equal(oldStream.readyState, app.EventSource.CLOSED);
+  assert.equal([...app.timerDelays.values()].includes(5000), false);
+  assert.equal(app.requests.find((r) => r.url === 'api/status').opts.signal.aborted, true);
+  app.ids.get('auth-pw').value = 'new-session-password';
+  await app.ids.get('auth-form').listeners.submit[0]({ preventDefault() {} });
+  await settle();
+  assert.equal(app.ids.get('stat-pushes').textContent, '42');
+  resolveOldStatus(response({ error: 'old session expired' }, 401));
+  await settle();
+  oldStream.listeners.status({ data: JSON.stringify(snapshot(2).status) });
+  assert.equal(app.context.location.reloads, 1, 'old 401 must not expire the new session');
+  assert.equal(app.ids.get('stat-pushes').textContent, '42');
 });
