@@ -1,6 +1,6 @@
 # Contributing to Tweet Watcher v2
 
-本仓库处于 `0.1.0-beta.3` 预发布阶段，采集器仅使用固定版本 twscrape；贡献前请阅读[开发指南](docs/DEVELOPMENT.md)与[架构与后续范围](docs/ARCHITECTURE.md)。第一代仍由 [Tweet-Watcher](https://github.com/xxvcc/Tweet-Watcher) 独立维护。
+本仓库处于 `0.1.0-beta.3` 预发布阶段，采集器仅使用固定版本 twscrape；贡献前请阅读[开发指南](docs/DEVELOPMENT.md)与[架构与后续范围](docs/ARCHITECTURE.md)。[第一代](https://github.com/xxvcc/Tweet-Watcher)已于 2026-10-29 停止维护，后续开发在本仓库进行。
 
 ## 开发和验证
 

@@ -10,7 +10,7 @@
 | v2 正式服务 | `tweet-watcher-v2.service`，独立用户 `tweet-watcher-v2`，live，监听 `127.0.0.1:8789` |
 | 正式代码 | `/opt/tweet-watcher-v2/current` → `releases/20261029-e3945ba4427d` |
 | 私有状态 | `/var/lib/tweet-watcher-v2`，目录 0700、文件 0600 |
-| v1 | `tweet-watcher.service` 已暂停、停止并禁用；不得同时恢复发送 |
+| v1 | 已停止维护，GitHub 仓库暂不归档；`tweet-watcher.service` 已暂停、停止并禁用，不得同时恢复发送 |
 | 旧预览 | `127.0.0.1:8788`，read-only，不参与正式发送 |
 
 正式代码是按文件哈希固定的独立快照，不从开发工作区直接运行。发布版本号和文档整理不会自动替换生产快照；已有功能的线上验证见[验证摘要](VERIFICATION.md)。AI 初次交接时关闭，随后用户已配置并完成真实测试；实际开关与配置以面板为准。
