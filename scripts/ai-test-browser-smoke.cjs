@@ -10,6 +10,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
+const { selectSettingsTab } = require('./simulation/browser.cjs');
 const root = path.resolve(__dirname, '..');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-v2-ai-browser-'));
 const dataDir = path.join(temporary, 'data');
@@ -151,6 +152,7 @@ async function main() {
   });
   const button = page.locator('#btn-test-ai');
   const result = page.locator('#ai-test-result');
+  await selectSettingsTab(page, 'delivery');
   assert.equal(await page.locator('#ai_translation_enabled').isChecked(), false);
   assert.equal(await button.isEnabled(), true, 'AI test must work with automatic translation disabled');
   assert.equal(await page.locator('#ai_api_key').inputValue(), '');
@@ -174,8 +176,10 @@ async function main() {
   await page.locator('#ai_model').fill('draft-model');
   assert.equal(await result.isVisible(), false, 'editing AI settings should clear a stale reply');
   await page.locator('#ai_api_key').fill(draftKey);
+  await selectSettingsTab(page, 'sources');
   await page.locator('#btn-add-acct').click();
   await page.locator('[data-role=name]').fill('draft_only');
+  await selectSettingsTab(page, 'delivery');
   const draftResult = await clickTest();
   assert.equal(draftResult.ok, true);
   assert.equal(draftResult.reply, reply);

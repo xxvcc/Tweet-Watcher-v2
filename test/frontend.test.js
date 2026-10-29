@@ -30,7 +30,7 @@ function matchesSimple(el, selector) {
     selector = selector.slice(0, attr.index);
     const actual = attr[1].startsWith('data-')
       ? el.dataset[attr[1].slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())]
-      : el.attributes[attr[1]];
+      : (el.attributes[attr[1]] ?? el[attr[1]]);
     const expected = attr[2] ?? attr[3];
     if (expected === undefined ? actual === undefined : String(actual) !== expected) return false;
   }
@@ -68,6 +68,8 @@ class FakeNode {
     this.placeholder = '';
     this.disabled = false;
     this.checked = false;
+    if (tagName === 'details') this.open = false;
+    this.tabIndex = ['button', 'input', 'select', 'summary'].includes(tagName) ? 0 : -1;
     this.type = tagName === 'input' ? 'text' : '';
     this._className = classes;
     this.classList = new ClassList(this, classes);
@@ -99,11 +101,14 @@ class FakeNode {
   setAttribute(name, value) {
     this.attributes[name] = String(value);
     if (name === 'readonly') this.readOnly = true;
-    if (name.startsWith('data-')) this.dataset[name.slice(5)] = String(value);
+    if (name === 'class') this.className = value;
+    if (name === 'tabindex') this.tabIndex = Number(value);
+    if (name.startsWith('data-')) this.dataset[name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = String(value);
   }
+  getAttribute(name) { return this.attributes[name] ?? null; }
   removeAttribute(name) { delete this.attributes[name]; if (name === 'readonly') this.readOnly = false; }
   addEventListener(type, fn) { (this.listeners[type] || (this.listeners[type] = [])).push(fn); }
-  matches(selector) { return matchesSelector(this, selector); }
+  matches(selector) { return selector.split(',').some((part) => matchesSelector(this, part)); }
   closest(selector) { let n = this; while (n) { if (matchesSelector(n, selector)) return n; n = n.parentNode; } return null; }
   querySelectorAll(selector) {
     const selectors = selector.split(',').map((s) => s.trim());
@@ -116,11 +121,30 @@ class FakeNode {
     return out;
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
-  focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; }
+  focus() {
+    if (!this.ownerDocument || this.disabled || this.closest('.hidden')) return;
+    if (typeof this.getClientRects === 'function' && this.getClientRects().length === 0) return;
+    let child = this;
+    for (let parent = this.parentNode; parent; child = parent, parent = parent.parentNode) {
+      if (parent.tagName === 'DETAILS' && !parent.open && child.tagName !== 'SUMMARY') return;
+    }
+    this.ownerDocument.activeElement = this;
+  }
 }
 
 class FakeText {
   constructor(value) { this.nodeType = 3; this.parentNode = null; this.textContent = String(value); }
+}
+
+function dispatchInputEvent(target, type = 'input') {
+  // Input and change bubble through the source editor before reaching the one
+  // settings draft listener, just as they do in the actual browser.
+  const event = { type, target };
+  for (let node = target; node; node = node.parentNode) {
+    event.currentTarget = node;
+    if (typeof node['on' + type] === 'function') node['on' + type](event);
+    for (const listener of node.listeners[type] || []) listener(event);
+  }
 }
 
 function buildDocument() {
@@ -136,6 +160,7 @@ function buildDocument() {
     listeners: {},
     getElementById: (id) => ids.get(id) || null,
     createElement: (tag) => attach(new FakeNode(tag)),
+    createElementNS: (_namespace, tag) => attach(new FakeNode(tag)),
     createTextNode: (value) => new FakeText(value),
     querySelectorAll: (selector) => html.querySelectorAll(selector),
     addEventListener(type, fn) { (this.listeners[type] || (this.listeners[type] = [])).push(fn); },
@@ -160,11 +185,22 @@ function buildDocument() {
   ['btn-pause', 'btn-resume', 'btn-settings', 'theme-toggle', 'logout'].forEach((id) => add(dash, id, 'button', id === 'btn-pause' || id === 'btn-resume' ? 'hidden' : ''));
   add(dash, 'toast', 'div', 'hidden');
   add(dash, 'runtime-notice');
-  ['stat-accounts', 'stat-next', 'stat-pushes', 'stat-uptime', 'acct-count'].forEach((id) => add(dash, id));
+  ['stat-accounts', 'stat-next', 'stat-pushes', 'stat-uptime', 'stat-pending', 'acct-count',
+    'session-summary', 'overview-ai', 'overview-delivery', 'feed-count'].forEach((id) => add(dash, id));
+  add(dash, 'activity-filter', 'select').value = 'important';
   add(dash, 'cards'); add(dash, 'cards-empty', 'div', 'hidden'); add(dash, 'feed');
+  add(dash, 'session-health'); add(dash, 'backfill-progress');
 
   const settings = add(body, 'settings', 'div', 'hidden');
   add(settings, 'settings-close', 'button'); add(settings, 'acct-list'); add(settings, 'btn-add-acct', 'button');
+  add(settings, 'session-list');
+  ['media_mode', 'enrichment_mode'].forEach((id) => add(settings, id, 'select'));
+  ['enrichment_limit', 'session-test-user', 'inspect-tweet-id', 'import-list-id'].forEach((id) => add(settings, id, 'input'));
+  ['btn-add-session', 'btn-test-default-session', 'btn-inspect-detail', 'btn-inspect-thread', 'btn-list-preview', 'btn-list-import'].forEach((id) => {
+    const button = add(settings, id, 'button');
+    if (!['btn-add-session', 'btn-list-import'].includes(id)) button.setAttribute('data-query', 'true');
+  });
+  ['inspect-result', 'x-test-result', 'list-preview'].forEach((id) => add(settings, id, 'div', 'hidden'));
   for (const id of ['auth_token', 'ct0', 'tg_bot_token']) add(settings, id, 'input', 'secret');
   for (const id of ['ai_translation_enabled', 'ai_base_url', 'ai_model', 'ai_api_key', 'clear_ai_api_key']) add(settings, id, 'input');
   ids.get('ai_api_key').type = 'password';
@@ -174,6 +210,44 @@ function buildDocument() {
   const pwForm = add(settings, 'pw-form', 'div', 'hidden');
   ['old_pw', 'new_pw', 'new_pw2'].forEach((id) => { const input = add(pwForm, id, 'input'); input.type = 'password'; });
   add(pwForm, 'btn-chpw', 'button');
+
+  // Keep actual tab containment: hidden fields still take part in the one
+  // settings draft, while validation must reveal their panel before focusing.
+  const nav = add(settings, 'settings-nav', 'nav');
+  settings.insertBefore(nav, ids.get('acct-list'));
+  const category = add(settings, 'settings-category', 'select');
+  for (const name of ['sources', 'connections', 'delivery', 'tools', 'security']) {
+    const option = attach(new FakeNode('option')); option.value = name;
+    category.appendChild(option);
+  }
+  category.value = 'sources';
+  const panels = add(settings, 'settings-panels');
+  settings.insertBefore(panels, ids.get('acct-list'));
+  const panelFields = {
+    sources: ['acct-list', 'btn-add-acct'],
+    connections: ['auth_token', 'ct0', 'btn-test-collector', 'session-test-user', 'btn-test-default-session',
+      'x-test-result', 'session-list', 'btn-add-session'],
+    delivery: ['tg_bot_token', 'tg_chat_id', 'btn-test-tg', 'ai_translation_enabled', 'ai_base_url', 'ai_model',
+      'ai_api_key', 'clear_ai_api_key', 'btn-test-ai', 'ai-test-result', 'media_mode', 'enrichment_mode', 'enrichment_limit'],
+    tools: ['import-list-id', 'btn-list-preview', 'list-preview', 'btn-list-import', 'inspect-tweet-id',
+      'btn-inspect-detail', 'btn-inspect-thread', 'inspect-result'],
+    security: ['collector-name', 'btn-detect-collector', 'collector-hint', 'pw-toggle', 'pw-form'],
+  };
+  for (const [name, fields] of Object.entries(panelFields)) {
+    const tab = add(nav, `settings-tab-${name}`, 'button', 'settings-tab');
+    tab.setAttribute('data-settings-tab', name);
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-controls', `settings-panel-${name}`);
+    tab.setAttribute('aria-selected', String(name === 'sources'));
+    tab.tabIndex = name === 'sources' ? 0 : -1;
+    const panel = add(panels, `settings-panel-${name}`, 'section', `settings-panel${name === 'sources' ? '' : ' hidden'}`);
+    panel.setAttribute('data-settings-panel', name);
+    panel.setAttribute('role', 'tabpanel');
+    fields.forEach((id) => panel.appendChild(ids.get(id)));
+  }
+  const footer = add(settings, 'settings-footer', 'footer');
+  add(footer, 'settings-save-state');
+  footer.appendChild(ids.get('btn-save'));
   return { document, ids };
 }
 
@@ -196,7 +270,7 @@ async function loadApp(handler, options = {}) {
     addEventListener(type, fn) { this.listeners[type] = fn; }
     close() { this.readyState = FakeEventSource.CLOSED; }
   }
-  const timers = new Map(), timerDelays = new Map(); let timerId = 0;
+  const timers = new Map(), timerDelays = new Map(), intervals = new Map(); let timerId = 0;
   const clock = {
     wall: Date.UTC(2026, 9, 24), monotonic: 0,
     advance(ms) { this.wall += ms; this.monotonic += ms; },
@@ -212,23 +286,25 @@ async function loadApp(handler, options = {}) {
     location,
     EventSource: EventSourceImpl,
     AbortController,
+    URL,
     Date: BrowserDate,
     performance: options.withoutPerformance ? undefined : { now: () => clock.monotonic },
     localStorage: { getItem() { return null; }, setItem() {} },
     getComputedStyle: () => ({ getPropertyValue: () => 'disc', webkitTextSecurity: 'disc' }),
     setTimeout(fn, delay) { const id = ++timerId; timers.set(id, fn); timerDelays.set(id, delay); return id; },
     clearTimeout(id) { timers.delete(id); timerDelays.delete(id); },
-    setInterval() { return ++timerId; },
-    clearInterval() {},
+    setInterval(fn, delay) { const id = ++timerId; intervals.set(id, { fn, delay }); return id; },
+    clearInterval(id) { intervals.delete(id); },
     fetch: async (url, opts = {}) => { requests.push({ url, opts }); return handler(url, opts, requests); },
     CSS: { escape: (value) => String(value) },
     console,
+    confirm: options.confirm || (() => { throw new Error('unexpected confirmation dialog'); }),
     addEventListener() {},
   };
   context.window = context;
   vm.runInNewContext(APP_SOURCE, context, { filename: 'public/app.js' });
   await settle();
-  return { context, document, ids, requests, EventSource: EventSourceImpl, timers, timerDelays, clock };
+  return { context, document, ids, requests, EventSource: EventSourceImpl, timers, timerDelays, intervals, clock };
 }
 
 const baseConfig = (revision = 10, overrides = {}) => ({
@@ -531,7 +607,9 @@ test('a rejected account autosave never starts collection or Telegram and preser
       if (opts.method === 'POST') {
         saves++;
         const body = JSON.parse(opts.body);
-        if (body.accounts[0].username === 'alice!') return response({ ok: false, error: '账号列表无效；配置未保存' }, 400);
+        // Keep this a server rejection: malformed usernames are now rejected
+        // locally before autosave, which has separate hidden-panel coverage.
+        if (body.accounts[0].username === 'alice_changed') return response({ ok: false, error: '账号列表无效；配置未保存' }, 400);
         config = baseConfig(11, { runtime, accounts: body.accounts });
         return response({ ok: true, warnings: [] });
       }
@@ -540,15 +618,19 @@ test('a rejected account autosave never starts collection or Telegram and preser
     throw new Error(`unexpected request: ${url}`);
   });
   const name = app.ids.get('acct-list').children[0].querySelector('.col-name');
-  name.value = 'alice!';
+  name.value = 'alice_changed';
+  app.ids.get('btn-settings').onclick();
   app.ids.get('auth_token').value = 'synthetic-unsaved-secret';
   for (const fn of app.ids.get('settings').listeners.input) fn({ target: name });
   for (const button of ['btn-test-collector', 'btn-test-tg']) {
+    app.ids.get('settings-tab-delivery').onclick();
     await app.ids.get(button).onclick();
     assert.match(app.ids.get('toast').textContent, /配置未保存/);
-    assert.equal(name.value, 'alice!');
+    assert.equal(name.value, 'alice_changed');
     assert.equal(app.ids.get('auth_token').value, 'synthetic-unsaved-secret');
     assert.equal(app.ids.get('btn-save').disabled, false);
+    assert.equal(app.ids.get('settings-panel-sources').classList.contains('hidden'), false);
+    assert.notEqual(app.document.activeElement, name, 'a general list rejection does not identify the first field as invalid');
   }
   assert.equal(saves, 2);
   assert.equal(app.requests.some((r) => r.url.startsWith('api/test/')), false);
@@ -577,7 +659,8 @@ test('new empty account placeholders are ignored while an explicit delete remove
   });
   app.ids.get('btn-add-acct').onclick();
   await app.ids.get('btn-save').onclick();
-  assert.deepEqual(submitted[0], [{ username: 'alice', fetch_count: 10, check_interval: 300 }]);
+  assert.deepEqual(submitted[0], [{ username: 'alice', source_type: 'user', timeline_mode: 'posts', fetch_count: 10, check_interval: 300,
+    filters: { include: [], exclude: [], originals: true, reposts: true, replies: true, quotes: true } }]);
   const row = app.ids.get('acct-list').children[0];
   assert.match(row.querySelector('.btn-x').attributes['aria-label'], /待发送消息/);
   row.querySelector('.btn-x').onclick();
@@ -1266,11 +1349,18 @@ test('AI tests retain independent busy state across status updates and unrelated
     }
   });
   const button = app.ids.get('btn-test-ai');
+  app.ids.get('btn-settings').onclick();
+  app.ids.get('settings-tab-delivery').onclick();
   const testing = button.onclick(); await settle();
   assert.equal(button.disabled, true);
   assert.equal(button.textContent, '发送中…');
   assert.equal(app.ids.get('ai-test-result').attributes['aria-busy'], 'true');
   assert.equal(app.ids.get('btn-test-collector').disabled, false);
+  for (const name of ['connections', 'security', 'sources', 'delivery']) {
+    app.ids.get(`settings-tab-${name}`).onclick();
+    assert.equal(button.disabled, true, 'changing tabs cannot clear an in-flight AI test');
+    assert.equal(app.ids.get('ai-test-result').attributes['aria-busy'], 'true');
+  }
   app.EventSource.instances[0].listeners.status({ data: JSON.stringify({ running: true, accounts: {}, runtime: aiTestRuntime, configRevision: 10 }) });
   assert.equal(button.disabled, true);
   app.ids.get('btn-settings').onclick();
@@ -1374,4 +1464,771 @@ test('a remote configuration revision cancels an AI test even when saved-key pre
   finishTest(response({ ok: true, reply: 'reply from old saved key', elapsedMs: 2 })); await testing;
   assert.equal(app.ids.get('ai-test-result').textContent, '');
   assert.equal(app.ids.get('btn-test-ai').disabled, false);
+});
+
+test('source editor saves List, reply scope, overlapping type filters and content policy without losing existing accounts', async () => {
+  const runtime = { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false };
+  let config = baseConfig(10, { runtime, accounts: [{ username: 'Alice', source_key: 'alice', fetch_count: 10, check_interval: 300 }] });
+  let submitted;
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') {
+      if (opts.method === 'POST') { submitted = JSON.parse(opts.body); config = baseConfig(11, { runtime, ...submitted, configRevision: 11 }); return response({ ok: true }); }
+      return response(config);
+    }
+    throw new Error('unexpected ' + url);
+  });
+  const first = app.ids.get('acct-list').children[0];
+  first.querySelector('[data-role=mode]').value = 'replies';
+  first.querySelector('[data-role=reposts]').checked = false;
+  first.querySelector('[data-role=include]').value = 'AI,开发';
+  app.ids.get('btn-add-acct').onclick();
+  const added = app.ids.get('acct-list').children[1];
+  const type = added.querySelector('[data-role=type]'); type.value = 'list'; type.onchange();
+  added.querySelector('[data-role=name]').value = '42';
+  app.ids.get('media_mode').value = 'photos'; app.ids.get('enrichment_mode').value = 'detail'; app.ids.get('enrichment_limit').value = '3';
+  await app.ids.get('btn-save').onclick();
+  assert.equal(submitted.accounts[0].timeline_mode, 'replies');
+  assert.equal(submitted.accounts[0].filters.reposts, false); assert.deepEqual(submitted.accounts[0].filters.include, ['AI', '开发']);
+  assert.equal(submitted.accounts[1].source_type, 'list'); assert.equal(submitted.accounts[1].list_id, '42');
+  assert.equal(submitted.accounts[1].username, undefined); assert.equal(submitted.media_mode, 'photos'); assert.equal(submitted.enrichment_limit, 3);
+});
+
+test('source replacement lists pending counts before save, cancellation keeps drafts, and confirmation is explicit', async () => {
+  let config = baseConfig(10, { accounts: [{ username: 'alice', source_key: 'alice', fetch_count: 10, check_interval: 300 }] });
+  const confirmations = [], submissions = []; let accepted = false;
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') {
+      if (opts.method === 'POST') {
+        const body = JSON.parse(opts.body); submissions.push(body);
+        config = baseConfig(11, { accounts: body.accounts }); return response({ ok: true });
+      }
+      return response(config);
+    }
+    throw new Error('unexpected ' + url);
+  }, { confirm: (message) => { confirmations.push(message); return accepted; } });
+  app.EventSource.instances.at(-1).listeners.status({ data: JSON.stringify({ accounts: {}, diagnostics: { pendingCounts: { alice: 4 } } }) });
+  const mode = app.ids.get('acct-list').children[0].querySelector('[data-role=mode]'); mode.value = 'replies';
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: mode });
+  app.ids.get('auth_token').value = 'synthetic-unsaved-secret';
+  await app.ids.get('btn-save').onclick();
+  assert.equal(submissions.length, 0); assert.match(confirmations[0], /@alice：4 条待发送消息/);
+  assert.equal(mode.value, 'replies'); assert.equal(app.ids.get('auth_token').value, 'synthetic-unsaved-secret');
+  assert.match(app.ids.get('toast').textContent, /已取消保存/); assert.equal(app.ids.get('btn-save').disabled, false);
+  accepted = true; await app.ids.get('btn-save').onclick();
+  assert.equal(submissions.length, 1); assert.equal(submissions[0].discard_removed_pending, true);
+  assert.equal(submissions[0].accounts[0].timeline_mode, 'replies');
+});
+
+test('server pending-removal conflict confirms fresh counts and retries without treating it as a remote configuration edit', async () => {
+  let config = baseConfig(10, { accounts: [{ username: 'alice', source_key: 'alice', fetch_count: 10, check_interval: 300 }] });
+  const confirmations = [], submissions = []; let accepted = false;
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') {
+      if (opts.method === 'POST') {
+        const body = JSON.parse(opts.body); submissions.push(body);
+        if (!body.discard_removed_pending) return response({ code: 'PENDING_REMOVAL_REQUIRES_CONFIRMATION',
+          error: '队列需要确认', removed_pending: [{ source_key: 'alice', pendingCount: 7 }] }, 409);
+        config = baseConfig(11, { accounts: [] }); return response({ ok: true });
+      }
+      return response(config);
+    }
+    throw new Error('unexpected ' + url);
+  }, { confirm: (message) => { confirmations.push(message); return accepted; } });
+  app.ids.get('acct-list').children[0].querySelector('.btn-x').onclick();
+  await app.ids.get('btn-save').onclick();
+  assert.equal(submissions.length, 1); assert.match(confirmations[0], /@alice：7 条待发送消息/);
+  assert.match(app.ids.get('toast').textContent, /已取消保存/);
+  accepted = true; await app.ids.get('btn-save').onclick();
+  assert.equal(submissions.length, 3); assert.equal(submissions[2].discard_removed_pending, true);
+  assert.equal(submissions[2].config_revision, 10); assert.match(app.ids.get('toast').textContent, /配置已保存/);
+});
+
+test('filter and page-size edits retain source identity and do not ask to discard its pending queue', async () => {
+  const accounts = [{ source_type: 'search', query: 'AI news', source_key: 'search:abcdef0123456789abcdef01', fetch_count: 10, check_interval: 300 }];
+  let submitted;
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') {
+      if (opts.method === 'POST') { submitted = JSON.parse(opts.body); return response({ ok: true }); }
+      return response(baseConfig(10, { accounts }));
+    }
+    throw new Error('unexpected ' + url);
+  });
+  app.EventSource.instances.at(-1).listeners.status({ data: JSON.stringify({ accounts: {}, diagnostics: { pendingCounts: { [accounts[0].source_key]: 2 } } }) });
+  const pageSize = app.ids.get('acct-list').children[0].querySelector('[data-role=fc]'); pageSize.value = 20;
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: pageSize });
+  await app.ids.get('btn-save').onclick();
+  assert.equal(submitted.accounts[0].fetch_count, 20); assert.equal(submitted.discard_removed_pending, undefined);
+});
+
+test('additional sessions never load credentials into controls and private drafts survive remote configuration conflicts', async () => {
+  const runtime = { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false };
+  let revision = 10;
+  const extra = { runtime, x_sessions: [{ id: 'backup', label: '备用', enabled: true }],
+    accounts: [{ username: 'alice', source_key: 'alice', fetch_count: 10, check_interval: 300 }],
+    secrets: { hasAuthToken: true, hasCt0: true, hasTgBotToken: false, hasAiApiKey: false,
+      x_sessions: { backup: { hasAuthToken: true, hasCt0: true } } } };
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig(revision, extra));
+    throw new Error('unexpected ' + url);
+  });
+  const row = app.ids.get('session-list').children[0]; const auth = row.querySelector('[data-role=auth_token]');
+  assert.equal(auth.value, ''); assert.match(auth.placeholder, /已保存/);
+  app.ids.get('btn-settings').onclick(); auth.value = 'synthetic-private-draft';
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: auth });
+  revision = 11;
+  const stream = app.EventSource.instances.at(-1);
+  stream.listeners.status({ data: JSON.stringify({ configRevision: 11, runtime, accounts: {}, diagnostics: { sessions: {
+    default: { lastSuccessAt: 1234, status: 'ready' }, backup: { lastFailureAt: 2345, nextRetryAt: 3456, lastError: '限流' },
+  }, backfills: { alice: { status: 'collecting', pages: 2, posts: 40, updatedAt: 1234 } } } }) });
+  await settle();
+  assert.equal(auth.value, 'synthetic-private-draft'); assert.match(app.ids.get('toast').textContent, /未保存内容已保留/);
+  assert.doesNotMatch(app.ids.get('session-health').textContent, /synthetic-private/);
+  assert.match(app.ids.get('session-health').textContent, /下次重试/);
+  assert.match(app.ids.get('backfill-progress').textContent, /1 个任务/);
+  assert.match(app.ids.get('cards').querySelector('.card-catchup').textContent, /2 页 \/ 40 条/);
+});
+
+test('new X queries share busy state with collector tests and render untrusted reply text without markup', async () => {
+  const runtime = { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false };
+  let finish;
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig(10, { runtime }));
+    if (url === 'api/inspect/tweet') return new Promise((resolve) => { finish = resolve; });
+    throw new Error('unexpected ' + url);
+  });
+  app.ids.get('inspect-tweet-id').value = '123';
+  const pending = app.ids.get('btn-inspect-detail').onclick(); await settle();
+  for (const id of ['btn-inspect-detail', 'btn-inspect-thread', 'btn-list-preview', 'btn-test-default-session', 'btn-test-collector']) assert.equal(app.ids.get(id).disabled, true, id);
+  app.EventSource.instances.at(-1).listeners.status({ data: JSON.stringify({ runtime, accounts: {} }) });
+  assert.equal(app.ids.get('btn-inspect-thread').disabled, true);
+  await app.ids.get('btn-inspect-thread').onclick(); await app.ids.get('btn-test-collector').onclick();
+  assert.equal(app.requests.filter((r) => r.url === 'api/inspect/tweet').length, 1);
+  finish(response({ ok: true, tweets: [{ id: '123', author_username: 'alice', text: '<img src=x onerror=alert(1)>',
+    content: { quoted: { text: '<b>quoted</b>', author_username: 'bob' }, article: { title: 'Synthetic article', previewText: 'preview' },
+      media: [{ type: 'photo', url: 'https://pbs.twimg.com/media/synthetic.jpg' }, { type: 'photo', url: 'javascript:alert(1)' }] } }] })); await pending;
+  assert.match(app.ids.get('inspect-result').textContent, /<img/);
+  assert.equal(app.ids.get('inspect-result').querySelectorAll('img').length, 0);
+  assert.match(app.ids.get('inspect-result').textContent, /Synthetic article/);
+  assert.equal(app.ids.get('inspect-result').querySelectorAll('.media-link').length, 1);
+  assert.equal(app.ids.get('btn-list-preview').disabled, false);
+  const sent = JSON.parse(app.requests.find((r) => r.url === 'api/inspect/tweet').opts.body);
+  assert.deepEqual(sent, { id: '123', kind: 'detail', config_revision: 10 });
+});
+
+test('List preview is explicit about partial results, imports only checked new users and remains an unsaved draft', async () => {
+  const runtime = { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false };
+  let saves = 0;
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') { if (opts.method === 'POST') saves++; return response(baseConfig(10, { runtime, accounts: [{ username: 'Alice' }] })); }
+    if (url === 'api/list/members') return response({ ok: true, complete: false, members: [{ username: 'alice' }, { username: 'bob', name: '<b>Bob</b>' }, { username: 'carol' }] });
+    throw new Error('unexpected ' + url);
+  });
+  app.ids.get('import-list-id').value = '42'; await app.ids.get('btn-list-preview').onclick();
+  assert.match(app.ids.get('list-preview').textContent, /部分结果/);
+  const choices = app.ids.get('list-preview').querySelectorAll('[data-role=member]'); choices[0].checked = true; choices[1].checked = true;
+  app.ids.get('btn-list-import').onclick();
+  assert.equal(saves, 0); assert.equal(app.ids.get('acct-list').children.length, 2);
+  assert.equal(app.ids.get('acct-list').children[1].querySelector('[data-role=name]').value, 'bob');
+  assert.match(app.ids.get('toast').textContent, /1 个账号加入草稿/); assert.equal(app.ids.get('list-preview').querySelectorAll('b').length, 0);
+});
+
+test('source testing uses server-supplied keys after saving and never maps a blank row to another source', async () => {
+  const runtime = { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false };
+  const source = { source_type: 'search', query: 'AI news', source_key: 'search:abcdef0123456789abcdef01', fetch_count: 10, check_interval: 300 };
+  let revision = 10; let tested;
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') {
+      if (opts.method === 'POST') { revision++; return response({ ok: true }); }
+      return response(baseConfig(revision, { runtime, accounts: [source] }));
+    }
+    if (url === 'api/test/collector') { tested = JSON.parse(opts.body); return response({ ok: true, message: 'synthetic success' }); }
+    throw new Error('unexpected ' + url);
+  });
+  const original = app.ids.get('acct-list').children[0]; app.ids.get('btn-add-acct').onclick();
+  const blank = app.ids.get('acct-list').children[1]; app.ids.get('acct-list').insertBefore(blank, original);
+  await original.querySelector('[data-query]').onclick();
+  assert.equal(tested.source_key, source.source_key); assert.equal(tested.config_revision, 11);
+});
+
+test('failed autosave prevents new X requests and logout clears pending query results and session credential drafts', async () => {
+  const runtime = { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false };
+  let saveFails = true; let finish;
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') {
+      if (opts.method === 'POST' && saveFails) return response({ error: '配置未保存' }, 400);
+      return response(baseConfig(10, { runtime }));
+    }
+    if (url === 'api/inspect/tweet') return new Promise((resolve) => { finish = resolve; });
+    if (url === 'api/logout') return response({ ok: true });
+    throw new Error('unexpected ' + url);
+  });
+  app.ids.get('media_mode').value = 'photos';
+  for (const fn of app.ids.get('settings').listeners.change) fn({ target: app.ids.get('media_mode') });
+  app.ids.get('inspect-tweet-id').value = '123'; await app.ids.get('btn-inspect-detail').onclick();
+  assert.equal(app.requests.some((r) => r.url === 'api/inspect/tweet'), false);
+  saveFails = false;
+  const pending = app.ids.get('btn-inspect-detail').onclick(); await settle();
+  app.ids.get('btn-add-session').onclick();
+  const secret = app.ids.get('session-list').children[0].querySelector('[data-role=auth_token]'); secret.value = 'synthetic-secret-draft';
+  await app.ids.get('logout').onclick(); assert.equal(secret.value, '');
+  finish(response({ ok: true, tweets: [{ id: '123', text: 'stale-private-text' }] })); await pending;
+  assert.equal(app.ids.get('inspect-result').textContent, '');
+});
+
+test('catchup reset runs only on the explicit source action and sends its saved stable key', async () => {
+  const runtime = { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false };
+  const source = { source_type: 'list', list_id: '42', source_key: 'list:42', fetch_count: 10, check_interval: 300 };
+  let resets = [];
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig(10, { runtime, accounts: [source] }));
+    if (url === 'api/catchup/reset') { resets.push(JSON.parse(opts.body)); return response({ ok: true, message: '补采已重建，检查点与待发队列保留' }); }
+    throw new Error('unexpected ' + url);
+  });
+  app.EventSource.instances.at(-1).listeners.status({ data: JSON.stringify({ runtime, accounts: {}, diagnostics: {
+    sessions: {}, backfills: { 'list:42': { status: 'collecting', pages: 2, items: 40 } },
+  } }) });
+  assert.match(app.ids.get('backfill-progress').textContent, /1 个任务/);
+  assert.match(app.ids.get('cards').querySelector('.card-catchup').textContent, /2 页 \/ 40 条/);
+  assert.equal(resets.length, 0);
+  const row = app.ids.get('acct-list').children[0]; const button = row.querySelectorAll('[data-query]')[1];
+  assert.match(row.textContent, /保留原采集检查点和待发送队列/);
+  await button.onclick();
+  assert.deepEqual(resets, [{ source_key: 'list:42', config_revision: 10 }]);
+});
+
+test('settings tabs support keyboard navigation and save drafts from every panel as one operation', async () => {
+  let config = baseConfig(10, { accounts: [{ username: 'alice', fetch_count: 10, check_interval: 300 }] });
+  let submitted, finishSave;
+  const saveResponse = new Promise((resolve) => { finishSave = resolve; });
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') {
+      if (opts.method === 'POST') {
+        submitted = JSON.parse(opts.body);
+        config = baseConfig(11, { accounts: submitted.accounts, tg_chat_id: submitted.tg_chat_id });
+        return saveResponse;
+      }
+      return response(config);
+    }
+    throw new Error('unexpected ' + url);
+  });
+  const field = (id) => app.ids.get(id);
+  field('btn-settings').focus(); field('btn-settings').onclick();
+  const assertSelected = (name) => {
+    for (const candidate of ['sources', 'connections', 'delivery', 'tools', 'security']) {
+      const tab = field(`settings-tab-${candidate}`), panel = field(`settings-panel-${candidate}`);
+      assert.equal(tab.getAttribute('aria-selected'), String(candidate === name));
+      assert.equal(tab.tabIndex, candidate === name ? 0 : -1);
+      assert.equal(panel.classList.contains('hidden'), candidate !== name);
+    }
+  };
+  const key = (from, value, expected) => {
+    const tab = field(`settings-tab-${from}`); let prevented = false;
+    tab.focus(); tab.listeners.keydown[0]({ key: value, preventDefault() { prevented = true; } });
+    assert.equal(prevented, true); assertSelected(expected);
+    assert.equal(app.document.activeElement, field(`settings-tab-${expected}`));
+  };
+  assertSelected('sources');
+  key('sources', 'ArrowRight', 'connections');
+  key('connections', 'End', 'security');
+  key('security', 'ArrowDown', 'sources');
+  key('sources', 'ArrowUp', 'security');
+  key('security', 'Home', 'sources');
+  const source = field('acct-list').children[0].querySelector('[data-role=name]');
+  source.value = 'alice_changed';
+  for (const fn of field('settings').listeners.input) fn({ target: source });
+  field('settings-tab-connections').onclick(); field('auth_token').value = 'synthetic-secret-draft';
+  for (const fn of field('settings').listeners.input) fn({ target: field('auth_token') });
+  field('settings-tab-delivery').onclick(); field('tg_chat_id').value = '-123';
+  for (const fn of field('settings').listeners.input) fn({ target: field('tg_chat_id') });
+  field('settings-tab-security').onclick();
+  assert.equal(field('settings-save-state').dataset.state, 'dirty');
+  assert.equal(app.requests.some((request) => request.opts.method === 'POST'), false, 'tab navigation never saves');
+  const saving = field('btn-save').onclick(); await settle();
+  assert.equal(submitted.accounts[0].username, 'alice_changed');
+  assert.equal(submitted.auth_token, 'synthetic-secret-draft');
+  assert.equal(submitted.tg_chat_id, '-123');
+  assert.equal(field('settings-save-state').dataset.state, 'saving');
+  for (const input of [source, field('auth_token'), field('tg_chat_id')]) assert.equal(input.disabled, true);
+  field('settings-tab-connections').onclick(); assertSelected('connections');
+  assert.equal(field('auth_token').disabled, true);
+  finishSave(response({ ok: true, warnings: [] })); await saving;
+  assert.equal(app.requests.filter((request) => request.opts.method === 'POST').length, 1);
+  assert.equal(field('settings-save-state').dataset.state, 'saved');
+  assert.equal(field('auth_token').value, '');
+  field('settings-close').onclick();
+  assert.equal(app.document.activeElement, field('btn-settings'));
+});
+
+test('invalid hidden-panel fields are revealed and focused before any save or collection request', async () => {
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig(10, { runtime: aiTestRuntime,
+      accounts: [{ username: 'alice', fetch_count: 10, check_interval: 300 }] }));
+    throw new Error('unexpected ' + url);
+  });
+  const field = (id) => app.ids.get(id);
+  const edit = (control, value) => {
+    control.value = value;
+    for (const fn of field('settings').listeners.input) fn({ target: control });
+  };
+  field('btn-settings').onclick();
+  const source = field('acct-list').children[0].querySelector('[data-role=name]');
+  edit(source, 'alice!'); edit(field('auth_token'), 'synthetic-private-draft');
+  field('settings-tab-delivery').onclick(); await field('btn-save').onclick();
+  assert.equal(field('settings-panel-sources').classList.contains('hidden'), false);
+  assert.equal(app.document.activeElement, source);
+  assert.equal(source.disabled, false);
+  assert.equal(field('settings-save-state').dataset.state, 'dirty');
+
+  edit(source, 'alice'); edit(field('enrichment_limit'), '0');
+  field('settings-tab-connections').onclick(); await field('btn-test-collector').onclick();
+  assert.equal(field('settings-panel-delivery').classList.contains('hidden'), false);
+  assert.equal(app.document.activeElement, field('enrichment_limit'));
+  assert.equal(field('btn-test-collector').disabled, false);
+
+  edit(field('enrichment_limit'), '2');
+  const endpoint = field('ai_base_url'), details = app.document.createElement('details');
+  endpoint.parentNode.insertBefore(details, endpoint); details.appendChild(endpoint);
+  details.open = false;
+  // The browser owns URL validity; this probe checks how the UI responds to an
+  // invalid native control, while browser coverage checks real URL validation.
+  endpoint.validity = { valid: false };
+  let reported = 0;
+  endpoint.reportValidity = () => {
+    reported++;
+    assert.equal(endpoint.disabled, false);
+    assert.equal(endpoint.closest('.hidden'), null);
+    assert.equal(app.document.activeElement, endpoint);
+    return false;
+  };
+  edit(endpoint, 'not a URL'); field('settings-tab-sources').onclick();
+  await field('btn-save').onclick();
+  assert.equal(reported, 1); assert.equal(details.open, true);
+  assert.equal(field('settings-panel-delivery').classList.contains('hidden'), false);
+  assert.equal(field('auth_token').value, 'synthetic-private-draft');
+  assert.equal(app.requests.some((request) => request.opts.method === 'POST'), false);
+});
+
+test('polling preserves a hidden tab draft and exposes conflicts in the global save indicator', async () => {
+  let config = baseConfig(10, { ai_model: 'old-model' });
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(config);
+    if (url === 'api/status') return response(snapshot(0, { configRevision: config.configRevision }));
+    if (url === 'api/logs') return response({ logs: [] });
+    throw new Error('unexpected ' + url);
+  });
+  const field = (id) => app.ids.get(id);
+  field('btn-settings').onclick(); field('settings-tab-connections').onclick();
+  field('auth_token').value = 'synthetic-hidden-draft';
+  for (const fn of field('settings').listeners.input) fn({ target: field('auth_token') });
+  field('settings-tab-security').onclick();
+  config = baseConfig(11, { ai_model: 'new-model' });
+  await runPollTimer(app);
+  assert.equal(field('settings-panel-connections').classList.contains('hidden'), true);
+  assert.equal(field('auth_token').value, 'synthetic-hidden-draft');
+  assert.equal(field('settings-save-state').dataset.state, 'conflict');
+  assert.match(field('settings-save-state').textContent, /草稿已保留/);
+  await field('btn-save').onclick();
+  assert.equal(app.requests.some((request) => request.opts.method === 'POST'), false);
+  field('settings-close').onclick(); await settle();
+  assert.equal(field('ai_model').value, 'new-model');
+  assert.equal(field('settings-save-state').dataset.state, 'clean');
+});
+
+test('pending summaries distinguish missing or malformed diagnostics from a confirmed empty queue', async () => {
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig(10, {
+      accounts: [{ username: 'alice', source_key: 'alice', fetch_count: 10, check_interval: 300 }],
+    }));
+    throw new Error('unexpected ' + url);
+  });
+  const send = (pendingCounts) => app.EventSource.instances.at(-1).listeners.status({ data: JSON.stringify({
+    running: true, accounts: {}, runtime: aiTestRuntime, diagnostics: { pendingCounts, sessions: {}, backfills: {} },
+  }) });
+  assert.equal(app.ids.get('stat-pending').textContent, '—');
+  for (const counts of [{}, { alice: -1 }, { alice: 0.5 }]) {
+    send(counts);
+    assert.equal(app.ids.get('stat-pending').textContent, '—');
+    assert.match(app.ids.get('overview-delivery').textContent, /待确认/);
+  }
+  send({ alice: 4 });
+  assert.equal(app.ids.get('stat-pending').textContent, '4');
+  assert.match(app.ids.get('cards').querySelector('.card-pending').textContent, /待发送 4/);
+  send({ alice: 0 });
+  assert.equal(app.ids.get('stat-pending').textContent, '0');
+  assert.equal(app.ids.get('stat-pending').dataset.state, 'clear');
+  assert.match(app.ids.get('overview-delivery').textContent, /无待发送消息/);
+});
+
+test('activity filters retain buffered routine messages and deduplicate SSE replay without more requests', async () => {
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    throw new Error('unexpected ' + url);
+  });
+  const stream = app.EventSource.instances.at(-1);
+  const logs = [{ id: 'routine', msg: '@alice 无新推文' }, { id: 'sent', msg: '✓ 推送 @alice: 101' },
+    { id: 'failed', msg: '✗ 拉取 @alice 失败：测试故障' }];
+  for (const record of [...logs, ...logs]) stream.listeners.log({ data: JSON.stringify({ ...record, t: '2026-10-30T00:00:00Z' }) });
+  assert.equal(app.ids.get('feed-count').textContent, '2');
+  assert.doesNotMatch(app.ids.get('feed').textContent, /无新推文/);
+  const requests = app.requests.length;
+  const filter = app.ids.get('activity-filter');
+  filter.value = 'all'; filter.listeners.change[0]();
+  assert.equal(app.ids.get('feed-count').textContent, '3');
+  assert.match(app.ids.get('feed').textContent, /无新推文/);
+  filter.value = 'errors'; filter.listeners.change[0]();
+  assert.equal(app.ids.get('feed-count').textContent, '1');
+  assert.match(app.ids.get('feed').textContent, /测试故障/);
+  assert.doesNotMatch(app.ids.get('feed').textContent, /✓ 推送/);
+  assert.equal(app.requests.length, requests);
+});
+
+test('AI save validation reveals the actual hidden field without autosaving or discarding private drafts', async () => {
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig(10, { runtime: aiTestRuntime, ai_model: 'synthetic-model',
+      secrets: { hasAuthToken: true, hasCt0: true, hasTgBotToken: true, hasAiApiKey: true } }));
+    throw new Error('unexpected ' + url);
+  });
+  const field = (id) => app.ids.get(id);
+  const edit = (id, value) => {
+    field(id).value = value;
+    for (const fn of field('settings').listeners.input) fn({ target: field(id) });
+  };
+  field('btn-settings').onclick();
+  edit('auth_token', 'synthetic-private-draft');
+  edit('ai_api_key', 'synthetic-new-ai-key');
+  // HTTP is a syntactically valid URL; native validity must not be mistaken for
+  // the application's stricter HTTPS-only destination rule.
+  field('ai_base_url').validity = { valid: true };
+  edit('ai_base_url', 'http://synthetic.example.test/v1');
+  field('settings-tab-sources').onclick();
+  await field('btn-save').onclick();
+  assert.equal(app.document.activeElement, field('ai_base_url'));
+  assert.equal(field('settings-panel-delivery').classList.contains('hidden'), false);
+  assert.match(field('toast').textContent, /HTTPS/);
+  assert.equal(field('ai_api_key').value, 'synthetic-new-ai-key');
+
+  edit('ai_base_url', 'https://new-provider.example.test/v1');
+  edit('ai_api_key', '');
+  field('settings-tab-connections').onclick();
+  await field('btn-test-collector').onclick();
+  assert.equal(app.document.activeElement, field('ai_api_key'));
+  assert.match(field('toast').textContent, /重新填写 API Key/);
+  assert.equal(field('btn-test-collector').disabled, false);
+
+  edit('ai_api_key', 'synthetic-new-ai-key');
+  field('clear_ai_api_key').checked = true;
+  field('settings-tab-security').onclick();
+  await field('btn-save').onclick();
+  assert.equal(app.document.activeElement, field('clear_ai_api_key'));
+  assert.match(field('toast').textContent, /不能同时提交/);
+  assert.equal(field('auth_token').value, 'synthetic-private-draft');
+  assert.equal(field('ai_api_key').value, 'synthetic-new-ai-key');
+  assert.equal(field('settings-save-state').dataset.state, 'dirty');
+  assert.equal(field('btn-save').disabled, false);
+  assert.equal(app.requests.some((request) => request.opts.method === 'POST'), false);
+});
+
+test('a generic server AI rejection reveals its panel without blaming the key or clearing the draft', async () => {
+  const rejected = 'AI 翻译配置无效：请检查开关、HTTPS API 地址、模型和 API Key';
+  const app = await loadApp(async (url, options) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config' && options.method === 'POST') return response({ ok: false, error: rejected }, 400);
+    if (url === 'api/config') return response(baseConfig(10, { runtime: aiTestRuntime, ai_model: 'synthetic-model' }));
+    throw new Error('unexpected ' + url);
+  });
+  const field = (id) => app.ids.get(id);
+  field('btn-settings').onclick();
+  field('ai_api_key').value = 'synthetic-private-draft';
+  for (const fn of field('settings').listeners.input) fn({ target: field('ai_api_key') });
+  field('settings-tab-connections').onclick();
+  await field('btn-test-collector').onclick();
+  assert.equal(field('settings-panel-delivery').classList.contains('hidden'), false);
+  assert.equal(app.document.activeElement, field('settings-tab-delivery'));
+  assert.notEqual(app.document.activeElement, field('ai_api_key'));
+  assert.equal(field('ai_api_key').value, 'synthetic-private-draft');
+  assert.equal(field('settings-save-state').dataset.state, 'dirty');
+  assert.equal(field('btn-save').disabled, false);
+  assert.equal(field('btn-test-collector').disabled, false);
+  assert.equal(field('toast').textContent, rejected);
+  const posts = app.requests.filter((request) => request.opts.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, 'api/config');
+  assert.equal(posts[0].opts.headers['x-csrf'], 'test-csrf');
+});
+
+test('unchanged session details retain their DOM while stale catchup data is labelled and fresh status recovers', async () => {
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig(10, { runtime: aiTestRuntime,
+      accounts: [{ username: 'alice', source_key: 'alice', fetch_count: 10, check_interval: 300 }] }));
+    throw new Error('unexpected ' + url);
+  });
+  const diagnostic = {
+    pendingCounts: { alice: 2 },
+    backfills: { alice: { status: 'collecting', pages: 2, posts: 40 } },
+    sessions: { default: { status: 'healthy', lastSuccessAt: app.clock.wall } },
+  };
+  const stream = app.EventSource.instances.at(-1);
+  const send = () => stream.listeners.status({ data: JSON.stringify({
+    running: true, accounts: {}, runtime: aiTestRuntime, diagnostics: diagnostic,
+  }) });
+  const tick = [...app.intervals.values()].find((interval) => interval.delay === 1000);
+  assert.ok(tick);
+  send();
+  const health = app.ids.get('session-health'), firstRow = health.firstChild;
+  const catchup = () => app.ids.get('cards').querySelector('.card-catchup-summary');
+  assert.match(catchup().textContent, /^补采中.*2 页 \/ 40 条/);
+  app.clock.advance(1000); tick.fn();
+  assert.equal(health.firstChild, firstRow, 'the one-second timer must not repeat the live region contents');
+  send();
+  assert.equal(health.firstChild, firstRow, 'identical status frames preserve the expanded details and selection');
+
+  app.clock.advance(31000); tick.fn();
+  assert.match(catchup().textContent, /^上次记录：补采中.*2 页 \/ 40 条/);
+  assert.equal(app.ids.get('stat-pending').textContent, '—');
+  assert.match(app.ids.get('backfill-progress').textContent, /待确认/);
+  assert.match(app.ids.get('session-summary').textContent, /待确认/);
+  assert.match(health.textContent, /上次记录/);
+  const staleRow = health.firstChild;
+  assert.notEqual(staleRow, firstRow, 'freshness transitions update the explanatory state once');
+  app.clock.advance(1000); tick.fn();
+  assert.equal(health.firstChild, staleRow, 'unchanged stale details are not rebuilt repeatedly');
+
+  send();
+  assert.doesNotMatch(catchup().textContent, /上次记录/);
+  assert.doesNotMatch(health.textContent, /上次记录/);
+  assert.equal(app.ids.get('stat-pending').textContent, '2');
+  assert.notEqual(health.firstChild, staleRow);
+  diagnostic.sessions.default = { status: 'rate-limited', rateLimitedUntil: app.clock.wall + 60000,
+    lastSuccessAt: app.clock.wall - 1000 };
+  send();
+  assert.match(health.textContent, /限流冷却中/);
+  assert.match(app.ids.get('session-summary').textContent, /限流冷却中/);
+});
+
+test('saved source summaries stay compact while editing and saving preserve the actual fields and open row', async () => {
+  let config = baseConfig(10, { accounts: [
+    { username: 'alice', fetch_count: 10, check_interval: 300 },
+    { username: 'bob', timeline_mode: 'replies', fetch_count: 20, check_interval: 90 },
+  ] });
+  let submitted;
+  const app = await loadApp(async (url, options) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config' && options.method === 'POST') {
+      submitted = JSON.parse(options.body);
+      config = baseConfig(11, { accounts: submitted.accounts });
+      return response({ ok: true, warnings: [] });
+    }
+    if (url === 'api/config') return response(config);
+    throw new Error('unexpected ' + url);
+  });
+  const field = (id) => app.ids.get(id);
+  field('btn-settings').onclick();
+  const [alice, bob] = field('acct-list').children;
+  assert.equal(alice.tagName, 'DETAILS'); assert.equal(bob.tagName, 'DETAILS');
+  assert.equal(alice.open, false); assert.equal(bob.open, false);
+  assert.equal(alice.querySelector('.source-editor-name').textContent, '@alice');
+  assert.equal(bob.querySelector('.source-editor-type').textContent, '帖子与回复');
+  assert.match(alice.querySelector('.source-editor-meta').textContent, /每 5 分钟.*10 条\/页.*全部内容/);
+  const name = alice.querySelector('[data-role=name]'), frequency = alice.querySelector('[data-role=iv]');
+  assert.equal(name.closest('.source-editor-body'), alice.querySelector('.source-editor-body'));
+  alice.open = true;
+  field('settings-tab-tools').onclick(); field('settings-tab-sources').onclick();
+  assert.equal(field('settings-save-state').dataset.state, 'clean', 'opening a source or changing panels is not a draft edit');
+  assert.equal(field('acct-list').children[0], alice, 'navigation preserves all source controls');
+  name.value = 'alice_changed'; dispatchInputEvent(name);
+  frequency.value = '90'; dispatchInputEvent(frequency);
+  const include = alice.querySelector('[data-role=include]');
+  include.value = 'AI, 工具'; dispatchInputEvent(include);
+  assert.equal(alice.querySelector('.source-editor-name').textContent, '@alice_changed');
+  assert.match(alice.querySelector('.source-editor-meta').textContent, /每 90 秒.*已设置筛选/);
+  alice.open = false; alice.open = true;
+  assert.equal(alice.querySelector('[data-role=name]'), name);
+  assert.equal(include.value, 'AI, 工具');
+  assert.equal(field('settings-save-state').dataset.state, 'dirty');
+  assert.equal(app.requests.some((request) => request.opts.method === 'POST'), false);
+  await field('btn-save').onclick();
+  assert.equal(submitted.accounts[0].username, 'alice_changed');
+  assert.equal(submitted.accounts[0].check_interval, 90);
+  assert.deepEqual(submitted.accounts[0].filters.include, ['AI', '工具']);
+  assert.equal(field('acct-list').children[0].open, true, 'the edited identity stays open after a successful save/reload');
+  assert.equal(field('acct-list').children[1].open, false);
+  assert.equal(field('settings-save-state').dataset.state, 'saved');
+
+  field('btn-add-acct').onclick();
+  const added = field('acct-list').children.at(-1);
+  assert.equal(added.open, true, 'new blank sources expose the required inputs immediately');
+  assert.equal(app.document.activeElement, added.querySelector('[data-role=name]'));
+  assert.equal(added.querySelector('.source-editor-name').textContent, '未填写的来源');
+  assert.equal(field('settings-save-state').dataset.state, 'dirty');
+});
+
+test('validation opens a collapsed source on another settings panel before focusing and never submits its invalid draft', async () => {
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig(10, { runtime: aiTestRuntime,
+      accounts: [{ username: 'alice', fetch_count: 10, check_interval: 300 }] }));
+    throw new Error('unexpected ' + url);
+  });
+  const field = (id) => app.ids.get(id);
+  field('btn-settings').onclick();
+  const row = field('acct-list').children[0], interval = row.querySelector('[data-role=iv]');
+  row.open = true; interval.value = '0'; dispatchInputEvent(interval); row.open = false;
+  field('auth_token').value = 'synthetic-hidden-cookie'; dispatchInputEvent(field('auth_token'));
+  field('settings-tab-connections').onclick();
+  await field('btn-test-collector').onclick();
+  assert.equal(field('settings-panel-sources').classList.contains('hidden'), false);
+  assert.equal(field('settings-category').value, 'sources');
+  assert.equal(row.open, true);
+  assert.equal(app.document.activeElement, interval);
+  assert.equal(interval.disabled, false);
+  assert.equal(interval.value, '0');
+  assert.equal(field('auth_token').value, 'synthetic-hidden-cookie');
+  assert.equal(field('settings-save-state').dataset.state, 'dirty');
+  assert.equal(field('btn-test-collector').disabled, false);
+  assert.equal(app.requests.some((request) => request.opts.method === 'POST'), false);
+});
+
+test('the mobile category selector exposes all five panels without dirtying drafts and receives generic error focus', async () => {
+  const error = 'AI 翻译配置无效：请检查开关、HTTPS API 地址、模型和 API Key';
+  const app = await loadApp(async (url, options) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config' && options.method === 'POST') return response({ ok: false, error }, 400);
+    if (url === 'api/config') return response(baseConfig(10, { runtime: aiTestRuntime }));
+    throw new Error('unexpected ' + url);
+  });
+  const field = (id) => app.ids.get(id), category = field('settings-category');
+  category.getClientRects = () => [{}];
+  for (const name of ['sources', 'connections', 'delivery', 'tools', 'security']) {
+    field('settings-tab-' + name).getClientRects = () => [];
+  }
+  field('btn-settings').onclick();
+  assert.deepEqual(category.children.map((option) => option.value), ['sources', 'connections', 'delivery', 'tools', 'security']);
+  for (const name of ['connections', 'delivery', 'tools', 'security', 'sources']) {
+    category.value = name; dispatchInputEvent(category, 'change');
+    assert.equal(field('settings-panel-' + name).classList.contains('hidden'), false);
+    assert.equal(field('settings-tab-' + name).getAttribute('aria-selected'), 'true');
+    assert.equal(field('settings-save-state').dataset.state, 'clean');
+  }
+  field('ai_api_key').value = 'synthetic-mobile-key'; dispatchInputEvent(field('ai_api_key'));
+  category.value = 'connections'; dispatchInputEvent(category, 'change');
+  assert.equal(field('settings-save-state').dataset.state, 'dirty');
+  assert.equal(field('ai_api_key').value, 'synthetic-mobile-key');
+  assert.equal(app.requests.some((request) => request.opts.method === 'POST'), false);
+  await field('btn-test-collector').onclick();
+  assert.equal(category.value, 'delivery');
+  assert.equal(app.document.activeElement, category, 'server errors must not focus desktop tabs hidden by the mobile layout');
+  assert.equal(field('ai_api_key').value, 'synthetic-mobile-key');
+  assert.equal(field('settings-save-state').dataset.state, 'dirty');
+  const posts = app.requests.filter((request) => request.opts.method === 'POST');
+  assert.equal(posts.length, 1); assert.equal(posts[0].url, 'api/config');
+});
+
+test('friendly error summaries preserve literal details and expanded state across ticks, refreshed failures, and recovery', async () => {
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig(10, { runtime: aiTestRuntime,
+      accounts: [{ username: 'alice', source_key: 'alice', fetch_count: 10, check_interval: 300 }] }));
+    throw new Error('unexpected ' + url);
+  });
+  const stream = app.EventSource.instances.at(-1);
+  const send = (account, paused = false) => stream.listeners.status({ data: JSON.stringify({
+    running: true, paused, accounts: { alice: account }, runtime: aiTestRuntime,
+    diagnostics: { pendingCounts: { alice: 0 }, sessions: {}, backfills: {} },
+  }) });
+  const budgetError = '本轮页数预算尚未覆盖上次水位，未推进水位';
+  send({ ok: false, lastError: budgetError });
+  const card = app.ids.get('cards').children[0], initial = card.querySelector('.errline');
+  assert.equal(initial.tagName, 'DETAILS'); assert.equal(initial.open, false);
+  assert.equal(initial.querySelector('.error-summary-text').textContent, '历史内容尚未补齐');
+  assert.equal(initial.querySelector('.error-original').textContent, budgetError);
+  initial.open = true;
+  send({ ok: false, lastError: budgetError });
+  assert.equal(card.querySelector('.errline'), initial, 'identical SSE frames preserve reading position and the error disclosure');
+  assert.equal(initial.open, true);
+  const tick = [...app.intervals.values()].find((interval) => interval.delay === 1000);
+  app.clock.advance(31000); tick.fn();
+  assert.equal(card.querySelector('.errline'), initial);
+  assert.equal(initial.querySelector('.error-summary-text').textContent, '上次记录：历史内容尚未补齐');
+  assert.equal(initial.querySelector('.error-original').textContent, budgetError);
+  send({ ok: false, lastError: budgetError }, true);
+  assert.equal(card.querySelector('.errline'), initial);
+  assert.doesNotMatch(initial.querySelector('.error-summary-text').textContent, /成功|已补齐|继续|自动/);
+
+  const unsafeText = '<img src=x onerror=alert(1)> unexpected synthetic response';
+  send({ ok: false, lastError: unsafeText });
+  const changed = card.querySelector('.errline');
+  assert.equal(changed.open, true, 'new failure details remain open when the reader already expanded the previous one');
+  assert.equal(changed.querySelector('.error-summary-text').textContent, '本次检查遇到问题');
+  assert.equal(changed.querySelector('.error-original').textContent, unsafeText);
+  assert.equal(changed.querySelector('.error-original').children.length, 0, 'raw errors are text, never parsed HTML');
+  assert.equal(changed.querySelector('img'), null);
+  send({ ok: false, lastError: 'Telegram 推送失败：Synthetic 503' });
+  assert.equal(card.querySelector('.error-summary-text').textContent, '消息推送遇到问题');
+  assert.equal(card.querySelector('.errline').open, true);
+  send({ ok: true, lastError: '' });
+  assert.equal(card.querySelector('.errline'), null);
+  assert.equal(card.querySelector('.tweet').textContent, '本次运行暂无推送');
+  assert.match(card.querySelector('.st').textContent, /正常/);
+});
+
+test('activity error disclosures retain original text, reading position and expansion through updates, filters and SSE replay', async () => {
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    throw new Error('unexpected ' + url);
+  });
+  const stream = app.EventSource.instances.at(-1), feed = app.ids.get('feed');
+  const failure = { id: 'delivery-failure', t: '2026-10-30T00:10:00Z',
+    msg: '✗ 推送失败 @alice: 101（<img src=x onerror=alert(1)> synthetic acknowledgement missing）' };
+  const push = (line) => stream.listeners.log({ data: JSON.stringify(line) });
+  push(failure);
+  const disclosure = feed.querySelector('.activity-error');
+  assert.equal(disclosure.tagName, 'DETAILS'); assert.equal(disclosure.open, false);
+  assert.equal(disclosure.querySelector('.error-summary-text').textContent, '@alice · 消息推送遇到问题');
+  assert.doesNotMatch(disclosure.querySelector('.error-summary-text').textContent, /上次记录|未送达|已送达/);
+  const original = disclosure.querySelector('.error-original');
+  assert.equal(original.textContent, failure.msg);
+  assert.equal(original.children.length, 0); assert.equal(disclosure.querySelector('img'), null);
+  const time = feed.querySelector('.t').textContent;
+  assert.match(time, /\d/);
+  disclosure.open = true; feed.scrollTop = 145;
+  push({ id: 'routine-after-failure', t: '2026-10-30T00:10:01Z', msg: '@bob 无新推文' });
+  push({ id: 'success-after-failure', t: '2026-10-30T00:10:02Z', msg: '✓ 推送 @bob: 102' });
+  assert.equal(feed.querySelector('.activity-error'), disclosure, 'new logs reuse the error row being read');
+  assert.equal(disclosure.open, true);
+  assert.equal(feed.scrollTop, 145, 'new activity must not force the reader back to the top');
+  const filter = app.ids.get('activity-filter');
+  filter.value = 'all'; dispatchInputEvent(filter, 'change');
+  assert.equal(app.ids.get('feed-count').textContent, '3');
+  assert.equal(feed.querySelector('.activity-error'), disclosure);
+  assert.equal(disclosure.open, true);
+  assert.equal(feed.scrollTop, 0, 'a deliberate filter change starts at the selected results');
+  filter.value = 'errors'; dispatchInputEvent(filter, 'change');
+  assert.equal(app.ids.get('feed-count').textContent, '1');
+  assert.equal(feed.querySelector('.activity-error'), disclosure);
+  assert.equal(disclosure.open, true);
+  assert.equal(feed.querySelector('.t').textContent, time);
+  push(failure);
+  assert.equal(feed.querySelectorAll('.activity-error').length, 1);
+  assert.equal(feed.querySelector('.activity-error'), disclosure);
+  assert.equal(disclosure.open, true);
+  assert.equal(original.textContent, failure.msg);
+  assert.equal(app.requests.some((request) => request.opts.method === 'POST'), false);
 });

@@ -10,6 +10,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
+const { selectSettingsTab } = require('./simulation/browser.cjs');
 const root = path.resolve(__dirname, '..');
 const disableSse = process.env.BROWSER_SMOKE_DISABLE_SSE === '1';
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-v2-browser-'));
@@ -109,12 +110,15 @@ async function main() {
   await page.screenshot({ path: path.join(artifacts, 'desktop-panel.png'), fullPage: true, animations: 'disabled' });
 
   await openSettledSettings();
+  await selectSettingsTab(page, 'security');
   assert.equal(await page.locator('#collector-name').textContent(), 'twscrape');
   assert.equal(await page.locator('#btn-test-collector').isEnabled(), true);
+  await selectSettingsTab(page, 'sources');
   await page.locator('#btn-add-acct').click();
   await page.locator('[data-role=name]').fill('synthetic_demo');
   await page.locator('[data-role=fc]').fill('20');
   await page.locator('[data-role=iv]').fill('300');
+  await selectSettingsTab(page, 'delivery');
   assert.equal(await page.locator('#ai_translation_enabled').isChecked(), false);
   await page.locator('#ai_translation_enabled').check();
   await page.locator('#ai_base_url').fill('https://synthetic.example.test/v1');
@@ -130,6 +134,7 @@ async function main() {
   const aiSettings = await page.evaluate(async () => (await fetch('api/config')).json());
   assert.equal(aiSettings.secrets.hasAiApiKey, true);
   assert.equal(JSON.stringify(aiSettings).includes('synthetic-browser-key'), false);
+  await selectSettingsTab(page, 'security');
   const detection = page.waitForResponse((response) => response.url().endsWith('/api/detect-collector'));
   await page.locator('#btn-detect-collector').click();
   assert.equal((await detection).status(), 200);
@@ -147,6 +152,7 @@ async function main() {
       `panel overflows ${viewport.width}px viewport`);
     await page.screenshot({ path: path.join(artifacts, `mobile-${viewport.width}-panel.png`), fullPage: true, animations: 'disabled' });
     await openSettledSettings();
+    await selectSettingsTab(page, 'sources');
     assert.equal(await page.evaluate(() => {
       const drawer = document.querySelector('.drawer');
       return drawer.scrollWidth <= drawer.clientWidth && document.documentElement.scrollWidth <= innerWidth;

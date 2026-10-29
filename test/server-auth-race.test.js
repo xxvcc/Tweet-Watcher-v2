@@ -39,6 +39,7 @@ const authMock = {
 };
 
 const configMock = {
+  ...require('../lib/config'),
   LIMITS: { MAX_ACCOUNTS: 100 },
   getConfig: () => ({
     tg_chat_id: '1', paused: false, accounts: [],
@@ -476,6 +477,7 @@ test('configuration API exposes a fixed collector and cannot select an executabl
   assert.equal(Object.hasOwn(await saved.json(), 'bird_path'), false);
   assert.deepEqual(savedConfigs, [{
     tg_chat_id: '1', paused: false, accounts: [], revision: 4,
+    media_mode: 'links', enrichment_mode: 'off', enrichment_limit: 2, x_sessions: [],
     ai_translation_enabled: false, ai_base_url: 'https://api.openai.com/v1', ai_model: '',
   }]);
 });

@@ -1,0 +1,327 @@
+{
+  "observedAt": "2026-10-29T15:07:57.246713+00:00",
+  "scope": "Public upstream source and metadata, local application source, synthetic offline probes. No authenticated X, AI, Telegram or production-state access.",
+  "application": {
+    "version": "0.1.0-beta.3",
+    "commit": "b7bf16be35b5df8063ba1d5a1c8de62c148c21ee"
+  },
+  "upstream": {
+    "repository": "https://github.com/vladkens/twscrape",
+    "mainCommit": "63f61a518e576ea5c132f1156c03dda0520d76c1",
+    "commitTimeUtc": "2026-10-21T21:19:14Z",
+    "latestRelease": "v0.20.1",
+    "latestReleasePublishedAtUtc": "2026-08-25T16:21:25Z",
+    "packageVersion": "0.20.1"
+  },
+  "publicPullRequestsObserved": [
+    {
+      "number": 364,
+      "state": "open",
+      "merged": false,
+      "topic": "Rate limit and suspension rotation, single-object parse failures"
+    },
+    {
+      "number": 361,
+      "state": "open",
+      "merged": false,
+      "topic": "Expose retweeted and quoted tweet IDs"
+    }
+  ],
+  "sourceFiles": [
+    {
+      "file": "vendor/twscrape/__init__.py",
+      "sha256": "bc91fdcf9dc5497d87e667e7caf7d4e040d1d76b46b9d01aa8ed071b3d1da60f",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/account.py",
+      "sha256": "34f0f6040bce604aee2629deeb77a7bb7023ee2b6e1812a7d47f348f868b4a15",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/accounts_pool.py",
+      "sha256": "a0199d1e84617e08c7f65b39ceac7aea2484affa04a8cc20d9dcb175ea4232b6",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/api.py",
+      "sha256": "752b81a9a0189a3961c8a0655b7b38a2ce22d589f2fffc7ae9c0f50824344be0",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/cli.py",
+      "sha256": "2b44c816729351228d065d1e04e09e180c1d3fb5d73aae25db793b88b2457dec",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/db.py",
+      "sha256": "726b99c36aef2385851dcdc4793b121386e8834d52fff07eca8f7e4423865a89",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/http.py",
+      "sha256": "0add3d5224ed174b7e665e29120c27d0c364aa53a2a6c424845ba35bb5d66d8a",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/imap.py",
+      "sha256": "457de3564b4fc494f80a8e2ddd70117132590b5eb121db1dda39c1b341ee37a1",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/logger.py",
+      "sha256": "3e758cc2aa30b14358b6f3d2565945ed1e40bf0394675e37715b2bc16b4d1c7a",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/login.py",
+      "sha256": "64214d2bf1e45d5c06ed42e1d96eacecd20eca19653f69b7132dd3ab38af94e8",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/models.py",
+      "sha256": "151e84ba7885514a7d10764e3d17df33fe1724618a83ceee58ae002e4e9d812d",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/queue_client.py",
+      "sha256": "bd849590e2077b7de9867d45e91aa2a16c381207f151e2179ad4b687ffcd248e",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/telemetry.py",
+      "sha256": "4117b1dbc7f8b937ae802b5d4d5caffbcba467697704a0331740630a7eaee35c",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/utils.py",
+      "sha256": "64402a6fdf80b90218d74616fa0260732447ec6df44c30b1343e67b8a0488f6a",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/twscrape/xclid.py",
+      "sha256": "15fd4ce69d9fd047833527b3ca41c1c94a11c67c40fd2dbf801e446f1f79c5ae",
+      "matchesLock": true,
+      "matchesUpstream": true
+    },
+    {
+      "file": "vendor/TWSCRAPE_LICENSE",
+      "sha256": "6dd3687e100b410364f96b27f6710d506f4e09ec79d7b724d879d80d84f453db",
+      "matchesLock": true,
+      "matchesUpstream": true
+    }
+  ],
+  "publicApiMethods": [
+    {
+      "name": "search_raw",
+      "line": 287
+    },
+    {
+      "name": "search",
+      "line": 301
+    },
+    {
+      "name": "search_user",
+      "line": 308
+    },
+    {
+      "name": "user_by_id_raw",
+      "line": 318
+    },
+    {
+      "name": "user_by_id",
+      "line": 334
+    },
+    {
+      "name": "user_by_login_raw",
+      "line": 340
+    },
+    {
+      "name": "user_by_login",
+      "line": 356
+    },
+    {
+      "name": "user_about_raw",
+      "line": 360
+    },
+    {
+      "name": "user_about",
+      "line": 366
+    },
+    {
+      "name": "tweet_details_raw",
+      "line": 372
+    },
+    {
+      "name": "tweet_details",
+      "line": 387
+    },
+    {
+      "name": "tweet_replies_raw",
+      "line": 394
+    },
+    {
+      "name": "tweet_replies",
+      "line": 414
+    },
+    {
+      "name": "tweet_thread_raw",
+      "line": 427
+    },
+    {
+      "name": "tweet_thread",
+      "line": 478
+    },
+    {
+      "name": "followers_raw",
+      "line": 488
+    },
+    {
+      "name": "followers",
+      "line": 496
+    },
+    {
+      "name": "verified_followers_raw",
+      "line": 505
+    },
+    {
+      "name": "verified_followers",
+      "line": 515
+    },
+    {
+      "name": "following_raw",
+      "line": 524
+    },
+    {
+      "name": "following",
+      "line": 531
+    },
+    {
+      "name": "subscriptions_raw",
+      "line": 540
+    },
+    {
+      "name": "subscriptions",
+      "line": 547
+    },
+    {
+      "name": "retweeters_raw",
+      "line": 556
+    },
+    {
+      "name": "retweeters",
+      "line": 563
+    },
+    {
+      "name": "user_tweets_raw",
+      "line": 572
+    },
+    {
+      "name": "user_tweets",
+      "line": 587
+    },
+    {
+      "name": "user_tweets_and_replies_raw",
+      "line": 596
+    },
+    {
+      "name": "user_tweets_and_replies",
+      "line": 611
+    },
+    {
+      "name": "user_media_raw",
+      "line": 622
+    },
+    {
+      "name": "user_media",
+      "line": 639
+    },
+    {
+      "name": "list_timeline_raw",
+      "line": 652
+    },
+    {
+      "name": "list_timeline",
+      "line": 660
+    },
+    {
+      "name": "trends_raw",
+      "line": 669
+    },
+    {
+      "name": "trends",
+      "line": 689
+    },
+    {
+      "name": "search_trend",
+      "line": 696
+    },
+    {
+      "name": "bookmarks_raw",
+      "line": 709
+    },
+    {
+      "name": "bookmarks",
+      "line": 727
+    },
+    {
+      "name": "list_members_raw",
+      "line": 736
+    },
+    {
+      "name": "list_members",
+      "line": 743
+    },
+    {
+      "name": "community_members_raw",
+      "line": 752
+    },
+    {
+      "name": "community_members",
+      "line": 764
+    },
+    {
+      "name": "community_moderators_raw",
+      "line": 775
+    },
+    {
+      "name": "community_moderators",
+      "line": 787
+    },
+    {
+      "name": "community_tweets_raw",
+      "line": 798
+    },
+    {
+      "name": "community_tweets",
+      "line": 816
+    },
+    {
+      "name": "community_info_raw",
+      "line": 825
+    },
+    {
+      "name": "community_info",
+      "line": 834
+    }
+  ],
+  "limitations": [
+    "API methods include raw/parsed variants; this is not a count of independent product features.",
+    "Matching source hashes do not validate live endpoint behavior, completeness, quotas or throughput.",
+    "Probe results cover branch and schema behavior only."
+  ]
+}

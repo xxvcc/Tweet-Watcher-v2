@@ -4,7 +4,7 @@ These instructions apply only to this repository, Tweet-Watcher-v2. It is the se
 
 ## Current state
 
-- Package: `tweet-watcher-v2`, prerelease version `0.1.0-beta.3`.
+- Package: `tweet-watcher-v2`, version `0.2.0-beta.1` (deployed locally and published as a GitHub prerelease on 2026-10-30).
 - twscrape integration is implemented and authenticated live-validated; v2 has taken over the local production instance. twscrape is the only collector; removed first-generation executables, dependencies and routes must not be restored. Read docs/VERIFICATION.md for tested limits.
 - Preserve Node UI, authentication, scheduling, durable outbox, and their safety properties unless the task explicitly changes them.
 - Keep current facts, proposals, implemented behavior, and validation results distinct in documentation.

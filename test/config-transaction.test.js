@@ -9,9 +9,12 @@ const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const JOURNAL = 'config_transaction.json';
 const oldConfig = { tg_chat_id: '-1001', paused: false, accounts: [{ username: 'alice', fetch_count: 10, check_interval: 30 }], revision: 1 };
-const nextConfig = { ...oldConfig, tg_chat_id: '-1002', revision: 2 };
+const nextConfig = { ...oldConfig, tg_chat_id: '-1002', revision: 2,
+  media_mode: 'photos', enrichment_mode: 'detail', enrichment_limit: 3,
+  x_sessions: [{ id: 'backup', label: '备用会话', enabled: true, proxy_url: 'http://127.0.0.1:8080' }] };
 const oldSecrets = { auth_token: 'synthetic-auth', ct0: 'synthetic-csrf', tg_bot_token: 'synthetic-old-bot' };
-const nextSecrets = { ...oldSecrets, tg_bot_token: 'synthetic-new-bot' };
+const nextSecrets = { ...oldSecrets, tg_bot_token: 'synthetic-new-bot',
+  x_sessions: { backup: { auth_token: 'synthetic-backup-auth', ct0: 'synthetic-backup-csrf' } } };
 
 function child(dir, script) {
   return spawnSync(process.execPath, ['-e', script], {
@@ -56,7 +59,9 @@ test('every settings commit crash boundary restarts with an entire old or new pa
       const expectNew = boundary !== 'before-intent';
       assert.equal(loaded.config.tg_chat_id, expectNew ? nextConfig.tg_chat_id : oldConfig.tg_chat_id, boundary);
       assert.equal(loaded.config.revision, expectNew ? 2 : 1, boundary);
-      assert.deepEqual(loaded.secrets, { ai_api_key: '', ...(expectNew ? nextSecrets : oldSecrets) }, boundary);
+      assert.equal(loaded.config.media_mode, expectNew ? 'photos' : 'links', boundary);
+      assert.deepEqual(loaded.config.x_sessions, expectNew ? nextConfig.x_sessions : [], boundary);
+      assert.deepEqual(loaded.secrets, { ai_api_key: '', x_sessions: {}, ...(expectNew ? nextSecrets : oldSecrets) }, boundary);
       assert.equal(fs.existsSync(path.join(dir, JOURNAL)), false);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   }
@@ -73,7 +78,7 @@ test('a first-save crash recovers the selected accounts instead of presenting an
     const loaded = snapshot(dir);
     assert.equal(loaded.config.persisted, true);
     assert.deepEqual(loaded.config.accounts, nextConfig.accounts);
-    assert.deepEqual(loaded.secrets, { ai_api_key: '', ...nextSecrets });
+    assert.deepEqual(loaded.secrets, { ai_api_key: '', x_sessions: {}, ...nextSecrets });
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -181,12 +181,14 @@ test('obsolete executable settings are ignored without resetting accounts, pause
     const loaded = config.getConfig();
     assert.deepEqual(loaded, {
       tg_chat_id: '-123', paused: true, accounts, revision: 91, persisted: true,
+      media_mode: 'links', enrichment_mode: 'off', enrichment_limit: 2, x_sessions: [],
       ai_translation_enabled: false, ai_base_url: 'https://api.openai.com/v1', ai_model: '',
     });
     config.saveConfig({ ...loaded, bird_path: '/another/untrusted/executable' });
     assert.deepEqual(written, {
       name: 'config.json',
       value: { tg_chat_id: '-123', paused: true, accounts, _revision: 91,
+        media_mode: 'links', enrichment_mode: 'off', enrichment_limit: 2, x_sessions: [],
         ai_translation_enabled: false, ai_base_url: 'https://api.openai.com/v1', ai_model: '' },
     });
   } finally {

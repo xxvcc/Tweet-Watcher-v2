@@ -146,7 +146,7 @@ test('a failed ack survives a crash as pending and cannot erase a different in-f
   box.baseline('alice', ['1']);
   box.baseline('bob', ['1']);
   box.capture('alice', tweets(2, 1), BINDING, null);
-  box.capture('bob', tweets(2, 1), BINDING, null);
+  box.capture('bob', tweets(2, 1), 'b'.repeat(64), null);
   const write = store.writeJSON;
   store.writeJSON = () => { throw new Error('synthetic I/O failure'); };
   assert.throws(() => box.acknowledge('alice', '2', []), { code: 'OUTBOX_WRITE' });

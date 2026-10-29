@@ -1,6 +1,6 @@
 {
   "name": "tweet-watcher-v2",
-  "version": "0.1.0-beta.3",
+  "version": "0.2.0-beta.1",
   "private": true,
   "description": "X to Telegram watcher with an isolated, pinned twscrape collector",
   "main": "server.js",
@@ -10,6 +10,9 @@
     "check": "node scripts/check-syntax.js",
     "collector:install": "bash scripts/install-collector.sh",
     "test:collector": ".venv/bin/python -m unittest discover -s collector/tests -v",
+    "test:simulation": "node scripts/simulation/run.cjs",
+    "test:simulation:browser": "node scripts/simulation/browser.cjs",
+    "test:simulation:soak": "node scripts/simulation/soak.cjs",
     "verify": "npm run check && npm test && npm run test:collector"
   },
   "dependencies": {

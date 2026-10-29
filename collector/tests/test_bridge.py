@@ -7,7 +7,7 @@ import subprocess
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("watcher_bridge", ROOT / "bridge.py")
@@ -16,12 +16,13 @@ SPEC.loader.exec_module(b)
 
 
 class FakeSession:
-    def __init__(self, status=200, chunks=None, error=None):
+    def __init__(self, status=200, chunks=None, error=None, headers=None):
         self.status = status
         self.chunks = chunks if chunks is not None else [b'{"data":{}}']
         self.calls = []
         self.error = error
         self.closed = False
+        self.headers = headers or {}
 
     async def request(self, *args, **kwargs):
         self.calls.append((args, kwargs))
@@ -30,7 +31,7 @@ class FakeSession:
         for chunk in self.chunks:
             if kwargs["content_callback"](chunk) != len(chunk):
                 raise RuntimeError("native callback aborted")
-        return SimpleNamespace(status_code=self.status)
+        return SimpleNamespace(status_code=self.status, headers=self.headers)
 
     async def close(self):
         self.closed = True
@@ -125,6 +126,39 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.transport.auth_token, "")
         self.assertEqual(self.transport.ct0, "")
 
+    async def test_successful_last_quota_response_retains_data_and_safe_metadata(self):
+        self.session.headers = {"x-rate-limit-remaining": "0", "x-rate-limit-reset": str(int(b.time.time()) + 120), "private": "never-return"}
+        result = await self.transport.get("https://x.com/i/api/graphql/operation/UserTweets")
+        self.assertEqual(result.body, b'{"data":{}}')
+        self.assertEqual(result.rate_limit["remaining"], 0)
+        self.assertEqual(result.rate_limit["operation"], "UserTweets")
+        self.assertNotIn("never-return", json.dumps(result.rate_limit))
+        self.session.status = 429
+        with self.assertRaises(b.BridgeError) as caught:
+            await self.transport.get("https://x.com/i/api/graphql/operation/UserTweets")
+        self.assertEqual(caught.exception.rate_limit, result.rate_limit)
+        self.assertEqual(len(self.session.calls), 2)
+
+    async def test_transient_get_retries_are_bounded_and_still_count_bytes(self):
+        for status in (502, 503, 504):
+            self.session.status = status
+            before = len(self.session.calls)
+            with patch.object(b.asyncio, "sleep", AsyncMock()) as sleep:
+                await self.assertCode("UPSTREAM_HTTP", self.transport.get("https://x.com/tesla"))
+            self.assertEqual(len(self.session.calls) - before, 3)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.25, 0.5])
+        self.assertEqual(self.transport.requests, 9)
+        self.assertEqual(self.transport.total_bytes, len(b'{"data":{}}') * 9)
+        self.session.error = RuntimeError("synthetic")
+        with patch.object(b.asyncio, "sleep", AsyncMock()):
+            await self.assertCode("NETWORK_ERROR", self.transport.get("https://x.com/tesla"))
+        self.assertEqual(self.transport.requests, 12)
+
+    async def test_explicit_proxy_reaches_transport_without_credentials_in_url(self):
+        self.transport.proxy = "http://proxy.test:8080"
+        await self.transport.get("https://x.com/tesla")
+        self.assertEqual(self.session.calls[-1][1]["proxy"], "http://proxy.test:8080")
+
 
 class ProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -169,6 +203,50 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(opts["params"]["variables"])["cursor"], "A+B==")
         self.assertEqual(json.loads(opts["params"]["variables"])["userId"], "9007199254740993")
         self.assertIs(json.loads(opts["params"]["variables"])["includePromotedContent"], False)
+        self.assertEqual(result["responseError"], "RATE_LIMITED")
+
+    async def test_extended_operations_use_fixed_ids_and_bounded_parameters(self):
+        await self.initialize()
+        for op, fields, expected in [
+            ("replies", {"userId": "42"}, b.OP_UserTweetsAndReplies),
+            ("list", {"listId": "123"}, b.OP_ListLatestTweetsTimeline),
+            ("search", {"query": "from:example topic"}, b.OP_SearchTimeline),
+            ("detail", {"tweetId": "123"}, b.OP_TweetDetail),
+            ("thread", {"tweetId": "123"}, b.OP_TweetDetail),
+            ("list_members", {"listId": "123"}, b.OP_ListMembers),
+        ]:
+            await self.bridge.handle({"op": op, **fields, "cursor": "next", "count": 20})
+            args, opts = self.session.calls[-1]
+            self.assertTrue(args[1].endswith(expected))
+            variables = json.loads(opts["params"]["variables"])
+            self.assertEqual(variables["cursor"], "next")
+            self.assertIs(variables["includePromotedContent"], False)
+            if op == "search": self.assertEqual(variables["product"], "Latest")
+            if op in ("detail", "thread"): self.assertIn("fieldToggles", opts["params"])
+
+    async def test_new_operations_reject_invalid_id_query_and_surrogates_before_network(self):
+        await self.initialize()
+        for request in [{"op": "list", "listId": "0"}, {"op": "detail", "tweetId": 123},
+                        {"op": "list_members", "listId": "1" * 33}, {"op": "search", "query": " "},
+                        {"op": "search", "query": "x" * 1025}, {"op": "search", "query": "bad\ud800"},
+                        {"op": "thread", "tweetId": "1", "cursor": "x\u007f"}]:
+            await self.assertCode("INVALID_REQUEST", request)
+        self.assertEqual(self.session.calls, [])
+
+    async def test_begin_resets_round_budgets_but_retains_bounded_signer_lifetime(self):
+        await self.initialize()
+        signer = self.bridge.signer
+        self.bridge.operations = b.MAX_OPERATIONS
+        self.transport.requests = b.MAX_REQUESTS
+        self.transport.total_bytes = b.MAX_TOTAL_BODY
+        await self.bridge.handle({"op": "begin"})
+        self.assertEqual((self.bridge.operations, self.transport.requests, self.transport.total_bytes), (0, 0, 0))
+        self.assertIs(self.bridge.signer, signer)
+        self.bridge.rounds = 8
+        await self.assertCode("REQUEST_BUDGET", {"op": "begin"})
+        self.bridge.rounds = 1
+        self.bridge.started -= 181
+        await self.assertCode("REQUEST_BUDGET", {"op": "begin"})
 
     async def test_user_uses_pinned_operation_and_features(self):
         await self.initialize()
@@ -188,7 +266,7 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_numeric_ids_must_arrive_as_strings(self):
         await self.initialize()
-        for user_id in (123, "0", "01", "-1", "1/anything", "1" * 26):
+        for user_id in (123, "0", "01", "-1", "1/anything", "1" * 33):
             await self.assertCode("INVALID_REQUEST", {"op": "timeline", "userId": user_id})
 
     async def test_cursor_validation(self):
@@ -244,6 +322,21 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StaticAndProcessTests(unittest.TestCase):
+    def test_proxy_requires_scheme_and_explicit_port_and_rejects_secrets_controls(self):
+        for value in ("", "http://proxy.test:80", "https://proxy.test:443/", "http://[::1]:8080"):
+            self.assertTrue(b.valid_proxy(value), repr(value))
+        for value in (None, "proxy.test:80", "http://proxy.test", "socks5://proxy.test:1080", "http://a:b@proxy.test:80",
+                      "http://proxy.test:0", "http://proxy.test:65536", "http://proxy.test:80/path", "http://proxy.test:80#",
+                      "http://proxy.test:80?", "\x00http://proxy.test:80", "http://proxy.test:80\x7f", "http://\ud800:80"):
+            self.assertFalse(b.valid_proxy(value), repr(value))
+
+    def test_malformed_rate_headers_are_dropped_without_echo(self):
+        url = "https://x.com/i/api/graphql/operation/UserTweets"
+        for value in ("-1", "1.2", "secret", "1000000000000000", 42):
+            self.assertIsNone(b.rate_metadata(url, {"x-rate-limit-remaining": value, "x-rate-limit-reset": value}))
+        self.assertIsNone(b.rate_metadata(url, {"x-rate-limit-reset": str(int(b.time.time()) + 90000)}))
+        self.assertIsNone(b.rate_metadata("https://x.com/tesla", {"x-rate-limit-remaining": "0"}))
+
     def test_source_manifest_matches(self):
         b.verify_source()
 

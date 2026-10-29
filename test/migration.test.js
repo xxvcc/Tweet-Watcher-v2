@@ -66,9 +66,14 @@ test('multiple accounts retain separate identities and strict coverage binding',
   const input = setup();
   input.accounts.push('Bob');
   input.sourceState.accounts.bob = structuredClone(input.sourceState.accounts.alice);
+  input.sourceState.accounts.bob.sent = ['199', '200'];
+  input.sourceState.accounts.bob.watermark = '200';
   input.coverageReport.sourceStateHash = stateDigest(input.sourceState);
   input.coverageReport.accounts.bob = structuredClone(input.coverageReport.accounts.alice);
-  for (const post of input.coverageReport.accounts.bob.tweets) post.author_username = 'bob';
+  input.coverageReport.accounts.bob.sinceId = '200';
+  input.coverageReport.accounts.bob.coverage.oldestId = '199';
+  input.coverageReport.accounts.bob.coverage.newestId = '202';
+  input.coverageReport.accounts.bob.tweets = [202, 201, 200, 199].map((id) => tweet(id, 'bob'));
   const migrated = migrateState(input);
   assert.equal(migrated.state.accounts.bob.pending.length, 2);
   assert.equal(migrated.state.accounts.alice.pending[0].author_username, 'alice');
@@ -190,6 +195,17 @@ test('rollback rejects a candidate produced from a different original snapshot',
   params.originalState = structuredClone(params.originalState);
   params.originalState.accounts.alice.sent.push('98');
   expectCode(() => rollbackState(params), 'MIGRATION_MANIFEST');
+});
+
+test('legacy rollback explicitly refuses multipart progress rather than resending or losing it', () => {
+  const input = setup();
+  const migrated = migrateState(input);
+  const live = liveOutbox(migrated.state);
+  live.box.prepareDelivery('alice', '101', [{ kind: 'text', text: 'delivered text' },
+    { kind: 'photo', url: 'https://pbs.twimg.com/media/synthetic.jpg' }]);
+  live.box.acknowledgePart('alice', '101', 0);
+  expectCode(() => rollbackState(rollbackInput(input, migrated, live.snapshot())), 'MIGRATION_EXTENDED_STATE');
+  assert.equal(live.box.get('alice').pending[0].delivery.next, 1);
 });
 
 test('migration CLI creates private complete candidate without changing inputs and refuses overwrite', (t) => {

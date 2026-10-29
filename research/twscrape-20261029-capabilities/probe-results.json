@@ -1,0 +1,30 @@
+{
+  "runAt": "2026-10-29T15:07:57.246713+00:00",
+  "scope": "Synthetic offline probes only",
+  "results": {
+    "content": {
+      "ok": true,
+      "data": "synthetic-in-memory",
+      "networkRequests": 0,
+      "parserKeepsQuoteIdentity": true,
+      "parserDropsMediaAndQuoteBody": true,
+      "outboxDropsExtraMediaAndQuoteFieldsAcrossReload": true,
+      "directlyAddingEitherOptionalFieldConflictsInBothMergeOrders": true
+    },
+    "transport": {
+      "http_200_data_and_errors": {
+        "accepted_without_exception": true,
+        "context_closed": false
+      },
+      "http_200_remaining_zero": {
+        "cooldown_until": 1700000030,
+        "handled_error": true,
+        "inactive": false,
+        "response_passed_to_caller": false
+      },
+      "network": "forbidden by audit hook; no upstream imports",
+      "probe": "AST-extracted QueueClient._check_rep branch logic only",
+      "source_sha256": "bd849590e2077b7de9867d45e91aa2a16c381207f151e2179ad4b687ffcd248e"
+    }
+  }
+}

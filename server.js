@@ -323,6 +323,17 @@ app.post('/api/password', requireAuth, requireCsrf, wrap(async (req, res) => {
 }));
 
 // ===== 配置 =====
+function publicAccounts(accounts) {
+  return accounts.map((account) => ({ ...account, source_key: cfgmod.sourceKey(account) }));
+}
+function diagnostics() {
+  return typeof worker.getDiagnostics === 'function' ? worker.getDiagnostics() : { sessions: {}, backfills: {} };
+}
+function boundedJson(res, value, maximum = 2 * 1024 * 1024) {
+  const json = JSON.stringify(value);
+  if (Buffer.byteLength(json) > maximum) return res.status(502).json({ ok: false, code: 'OUTPUT_TOO_LARGE', error: '结果超过显示上限，请缩小查询范围' });
+  return res.json(value);
+}
 function syncConfigRevision(cfg) {
   // Recovery can finish during a read even when scheduling is disabled. Publish
   // only the revision that is actually readable, never an attempted commit.
@@ -333,12 +344,16 @@ app.get('/api/config', requireAuth, (req, res) => {
   const s = cfgmod.getSecrets();
   syncConfigRevision(cfg);
   res.json({
-    tg_chat_id: cfg.tg_chat_id, accounts: cfg.accounts,
+    tg_chat_id: cfg.tg_chat_id, accounts: publicAccounts(cfg.accounts),
+    media_mode: cfg.media_mode, enrichment_mode: cfg.enrichment_mode, enrichment_limit: cfg.enrichment_limit,
+    x_sessions: cfg.x_sessions || [],
     ai_translation_enabled: cfg.ai_translation_enabled === true,
     ai_base_url: cfg.ai_base_url ?? AI_DEFAULTS.ai_base_url, ai_model: cfg.ai_model ?? AI_DEFAULTS.ai_model,
     collector: { name: runtime.status().collector, fixed: true },
     runtime: runtime.status(), configRevision: cfg.revision,
-    secrets: { hasAuthToken: !!s.auth_token, hasCt0: !!s.ct0, hasTgBotToken: !!s.tg_bot_token, hasAiApiKey: !!s.ai_api_key },
+    secrets: { hasAuthToken: !!s.auth_token, hasCt0: !!s.ct0, hasTgBotToken: !!s.tg_bot_token, hasAiApiKey: !!s.ai_api_key,
+      x_sessions: Object.fromEntries((cfg.x_sessions || []).map((session) => [session.id,
+        { hasAuthToken: !!s.x_sessions?.[session.id]?.auth_token, hasCt0: !!s.x_sessions?.[session.id]?.ct0 }])) },
   });
 });
 app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
@@ -366,6 +381,21 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
     }
     accounts = cfgmod.normalizeAccounts(b.accounts);
   }
+  if (b.discard_removed_pending !== undefined && typeof b.discard_removed_pending !== 'boolean') {
+    return res.status(400).json({ ok: false, error: '移除待发送队列的确认参数无效' });
+  }
+  const nextKeys = new Set(accounts.map(cfgmod.sourceKey));
+  const removedSources = cur.accounts.filter((source) => !nextKeys.has(cfgmod.sourceKey(source)));
+  if (removedSources.length && b.discard_removed_pending !== true) {
+    // Read the worker's current outbox, not the browser's potentially stale
+    // status snapshot. This check and the configuration commit are synchronous.
+    const pending = diagnostics().pendingCounts || {};
+    const affected = removedSources.map((source) => ({
+      source_key: cfgmod.sourceKey(source), pendingCount: pending[cfgmod.sourceKey(source)] || 0,
+    })).filter((source) => source.pendingCount > 0);
+    if (affected.length) return res.status(409).json({ ok: false, code: 'PENDING_REMOVAL_REQUIRES_CONFIRMATION',
+      error: '删除或替换的来源仍有待发送消息，请确认移除这些队列后再保存', removed_pending: affected });
+  }
   let tg_chat_id = cur.tg_chat_id;
   if (b.tg_chat_id !== undefined) {
     const validType = typeof b.tg_chat_id === 'string' || typeof b.tg_chat_id === 'number';
@@ -378,6 +408,19 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   }
   const sec = cfgmod.getSecrets();
   const ns = { ...sec };
+  if (!cfgmod.validContentSettings(b) || !cfgmod.validSessionSecrets(b.x_session_secrets)) {
+    return res.status(400).json({ ok: false, error: '来源策略或 X 会话配置无效；请检查模式、数量、会话 ID 和代理地址' });
+  }
+  const x_sessions = cfgmod.normalizeSessions(b.x_sessions ?? cur.x_sessions ?? []);
+  const sessionIds = new Set(x_sessions.map((session) => session.id));
+  if (Object.keys(b.x_session_secrets || {}).some((id) => !sessionIds.has(id))) {
+    return res.status(400).json({ ok: false, error: 'X 会话凭据没有对应的会话配置' });
+  }
+  ns.x_sessions = Object.fromEntries(x_sessions.map(({ id }) => {
+    const previous = sec.x_sessions?.[id] || {};
+    const submitted = b.x_session_secrets?.[id] || {};
+    return [id, { auth_token: submitted.auth_token || previous.auth_token || '', ct0: submitted.ct0 || previous.ct0 || '' }];
+  }));
   // AI fields are strict partial updates. A saved key belongs to its chosen
   // provider; changing endpoints must never silently forward it elsewhere.
   if ((b.ai_translation_enabled !== undefined && typeof b.ai_translation_enabled !== 'boolean')
@@ -415,7 +458,10 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   updateSecret('tg_bot_token', 'Telegram Bot Token');
   const nextRevision = cfgmod.nextRevision(currentRevision);
   const nextConfig = { tg_chat_id, paused: cur.paused, accounts, revision: nextRevision,
-    ai_translation_enabled, ai_base_url, ai_model };
+    ai_translation_enabled, ai_base_url, ai_model, x_sessions,
+    media_mode: b.media_mode ?? cur.media_mode ?? 'links',
+    enrichment_mode: b.enrichment_mode ?? cur.enrichment_mode ?? 'off',
+    enrichment_limit: b.enrichment_limit ?? cur.enrichment_limit ?? 2 };
   try {
     cfgmod.saveSettings(nextConfig, ns);
   } catch (e) {
@@ -428,7 +474,7 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   // worker 的 generation 负责取消旧任务；对外版本必须使用已落盘值。
   worker.configChanged(nextRevision, { paused: nextConfig.paused });
   // 回传服务端最终采用的值，便于前端核对被静默保留的字段
-  res.json({ ok: true, accounts, tg_chat_id, ai_translation_enabled, ai_base_url, ai_model, warnings });
+  res.json({ ok: true, accounts: publicAccounts(accounts), tg_chat_id, ai_translation_enabled, ai_base_url, ai_model, warnings });
 });
 
 // ===== 状态 / 日志 / 控制 / 测试 =====
@@ -438,7 +484,9 @@ app.get('/api/status', requireAuth, (req, res) => {
   const st = state.getStatus();
   const heartbeatAge = st.lastTickAt == null ? NaN : Date.now() - st.lastTickAt;
   const healthy = !st.controlPending && st.running && Number.isFinite(heartbeatAge) && heartbeatAge >= 0 && heartbeatAge < 60000;
-  res.json({ status: st, paused: st.controlPending ? true : cfg.paused, accounts: cfg.accounts, healthy, runtime: runtime.status() });
+  const diagnostic = diagnostics();
+  boundedJson(res, { status: { ...st, diagnostics: diagnostic }, diagnostics: diagnostic,
+    paused: st.controlPending ? true : cfg.paused, accounts: publicAccounts(cfg.accounts), healthy, runtime: runtime.status() });
 });
 app.get('/api/logs', requireAuth, (req, res) => { res.json({ logs: state.getLogs(200) }); });
 
@@ -528,10 +576,62 @@ app.post('/api/test/collector', requireAuth, requireCsrf, wrap(async (req, res) 
   const blocked = runtime.blocked('collection');
   if (blocked) return res.status(409).json(blocked);
   if (collectorTestInFlight) return res.status(429).json({ ok: false, error: '上一次测试仍在进行，请稍候' });
+  const b = req.body || {};
+  if (typeof b !== 'object' || Array.isArray(b) || Object.keys(b).some((key) => !['source_key', 'username', 'config_revision'].includes(key))
+    || (b.source_key !== undefined && b.username !== undefined)) return res.status(400).json({ ok: false, error: '来源测试参数无效' });
+  if (b.config_revision !== undefined) {
+    if (!cfgmod.validRevision(b.config_revision)) return res.status(400).json({ ok: false, error: '配置版本无效' });
+    if (b.config_revision !== cfgmod.getConfig().revision) return res.status(409).json({ ok: false, error: '配置已变化，请重新载入后再测试' });
+  }
+  const source = b.source_key ?? b.username ?? '';
+  if (typeof source !== 'string' || source.length > 100 || /[\x00-\x1f\x7f]/.test(source)) return res.status(400).json({ ok: false, error: '来源无效' });
+  const epoch = auth.sessionEpoch();
   collectorTestInFlight = true;
-  try { res.json(await worker.testCollector((req.body && req.body.username) || '')); }
+  try {
+    const result = await worker.testCollector(source);
+    if (auth.sessionEpoch() !== epoch || !auth.hasPassword() || !validSession(req)) return res.status(401).json({ ok: false, error: '认证状态已变化，请重新登录' });
+    boundedJson(res, publicCollectionResult(result));
+  }
   finally { collectorTestInFlight = false; }
 }));
+function publicCollectionResult(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok: false, error: '采集结果无效' };
+  return Object.fromEntries(['ok', 'code', 'error', 'message', 'collector', 'count', 'coverage', 'tweets', 'members', 'complete',
+    'sessionId', 'elapsedMs', 'lastSuccessAt', 'lastFailureAt', 'rateLimitedUntil', 'nextRetryAt', 'status']
+    .filter((key) => Object.hasOwn(value, key)).map((key) => [key, value[key]]));
+}
+function collectionRoute(route, fields, validate, run) {
+  app.post(route, requireAuth, requireCsrf, wrap(async (req, res) => {
+    const blocked = runtime.blocked('collection');
+    if (blocked) return res.status(409).json(blocked);
+    const b = req.body;
+    if (!b || typeof b !== 'object' || Array.isArray(b) || Object.keys(b).some((key) => !fields.includes(key)) || !validate(b)) {
+      return res.status(400).json({ ok: false, error: '测试参数无效' });
+    }
+    if (b.config_revision === undefined) return res.status(428).json({ ok: false, error: '请先载入当前配置再测试' });
+    if (!cfgmod.validRevision(b.config_revision)) return res.status(400).json({ ok: false, error: '配置版本无效' });
+    if (b.config_revision !== cfgmod.getConfig().revision) return res.status(409).json({ ok: false, error: '配置已变化，请重新载入后再测试' });
+    if (collectorTestInFlight) return res.status(429).json({ ok: false, error: '上一次 X 查询仍在进行，请稍候' });
+    const epoch = auth.sessionEpoch();
+    collectorTestInFlight = true;
+    try {
+      const result = await run(b);
+      if (auth.sessionEpoch() !== epoch || !auth.hasPassword() || !validSession(req)) return res.status(401).json({ ok: false, error: '认证状态已变化，请重新登录' });
+      boundedJson(res, publicCollectionResult(result));
+    } finally { collectorTestInFlight = false; }
+  }));
+}
+collectionRoute('/api/test/session', ['session_id', 'username', 'config_revision'],
+  (b) => (b.session_id === 'default' || cfgmod.validSessionId(b.session_id)) && cfgmod.validUsername(b.username),
+  (b) => worker.testSession(b.session_id, b.username));
+collectionRoute('/api/inspect/tweet', ['id', 'kind', 'config_revision'],
+  (b) => cfgmod.validId(b.id) && ['detail', 'thread'].includes(b.kind),
+  (b) => worker.inspectTweet(b.id, b.kind));
+collectionRoute('/api/list/members', ['list_id', 'config_revision'],
+  (b) => cfgmod.validId(b.list_id), (b) => worker.listMembers(b.list_id));
+collectionRoute('/api/catchup/reset', ['source_key', 'config_revision'],
+  (b) => typeof b.source_key === 'string' && /^[A-Za-z0-9_:-]{1,100}$/.test(b.source_key),
+  (b) => worker.resetCatchup(b.source_key));
 app.post('/api/test/telegram', requireAuth, requireCsrf, wrap(async (req, res) => {
   const blocked = runtime.blocked('delivery');
   if (blocked) return res.status(409).json(blocked);
@@ -587,7 +687,10 @@ app.get('/api/stream', requireAuth, (req, res) => {
     const idLine = id == null ? '' : `id: ${id}\n`;
     try { res.write(`event: ${event}\n${idLine}data: ${JSON.stringify(data)}\n\n`); } catch (_) { closeStream(true); }
   };
-  const onStatus = (s) => send('status', s);
+  const onStatus = (s) => {
+    try { send('status', { ...s, diagnostics: diagnostics() }); }
+    catch (_) { closeStream(); } // Diagnostic storage failures must not escape a worker event callback.
+  };
   const onLog = (l) => send('log', l, l.id);
   const sessionIsValid = () => {
     try { return auth.hasPassword() && validSession(req); }
@@ -606,7 +709,7 @@ app.get('/api/stream', requireAuth, (req, res) => {
     try { res.write(': ping\n\n'); } catch (_) { closeStream(); }
   }, 25000);
 
-  send('status', state.getStatus());
+  onStatus(state.getStatus());
   // 标准 SSE id 让浏览器自动重连时携带 Last-Event-ID。只补发该 ID 之后的日志；
   // ID 已淘汰或服务重启时回放最新 60 条，与前端可见窗口一致，不混入断线前的陈旧行。
   const recentLogs = state.getLogs(60);

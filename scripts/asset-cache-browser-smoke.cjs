@@ -1,17 +1,23 @@
 'use strict';
 // Reproduce a deployment with a real warm Chromium HTTP cache, then verify
 // content-hashed assets repair it without clearing that cache. Set
-// ASSET_CACHE_PREVIOUS_RELEASE to an earlier source release without the AI
-// test button. Only its public source files are read; all state is synthetic.
+// ASSET_CACHE_PREVIOUS_RELEASE to an earlier source release before the AI test
+// button or mobile settings selector. Only public source is read; state is synthetic.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
+const { selectSettingsTab } = require('./simulation/browser.cjs');
 const root = path.resolve(__dirname, '..');
 const previous = process.env.ASSET_CACHE_PREVIOUS_RELEASE;
 if (!previous) throw new Error('Set ASSET_CACHE_PREVIOUS_RELEASE to the previous source release');
+const previousHtml = fs.readFileSync(path.join(previous, 'public', 'index.html'), 'utf8');
+const categoryUpgrade = previousHtml.includes('id="btn-test-ai"');
+if (categoryUpgrade && previousHtml.includes('id="settings-category"')) {
+  throw new Error('Previous source already includes both supported feature probes');
+}
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-v2-asset-cache-'));
 let child;
 let browser;
@@ -148,7 +154,8 @@ async function main() {
 
   await page.goto(base + '/?phase=old', { waitUntil: 'domcontentloaded' });
   await page.locator('#dash').waitFor({ state: 'visible' });
-  assert.equal(await page.locator('#btn-test-ai').count(), 0, 'previous source must precede the AI test button');
+  assert.equal(await page.locator(categoryUpgrade ? '#settings-category' : '#btn-test-ai').count(), 0,
+    'previous source must precede the feature under test');
   assert.equal(assets.filter((asset) => asset.phase === 'old' && asset.pathname === '/app.js').length, 1);
 
   await setPhase('mixed');
@@ -156,11 +163,21 @@ async function main() {
   await page.locator('#dash').waitFor({ state: 'visible' });
   await page.locator('#btn-settings').click();
   const button = page.locator('#btn-test-ai');
-  await button.waitFor({ state: 'visible' });
-  assert.equal(await button.evaluate((element) => element.onclick), null,
-    'warm old script should leave the newly rendered button without a handler');
-  await button.click();
-  assert.equal(await page.locator('#ai-test-result').isVisible(), false);
+  if (categoryUpgrade) {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('#settings-category').selectOption('security');
+    assert.equal(await page.locator('[data-settings-panel=security]').isVisible(), false,
+      'cached old script cannot navigate using the newly rendered selector');
+    assert.equal(await page.locator('[data-settings-panel=sources]').isVisible(), true);
+  } else {
+    await button.waitFor({ state: 'attached' });
+    assert.equal(await button.evaluate((element) => element.onclick), null,
+      'warm old script should leave the newly rendered button without a handler');
+    // The cached source also predates settings tabs; dispatch directly to
+    // isolate the original missing-handler bug without bypassing any API gate.
+    await button.dispatchEvent('click');
+    assert.equal(await page.locator('#ai-test-result').isVisible(), false);
+  }
   assert.equal(await page.evaluate(() => window.__deniedRequests), 0);
   assert.equal(assets.some((asset) => asset.phase === 'mixed' && asset.pathname === '/app.js'), false,
     'Chromium must reuse the actual warm HTTP cache without fetching app.js');
@@ -171,11 +188,20 @@ async function main() {
   assert.equal(fixedResponse.headers()['cache-control'], 'no-store');
   await page.locator('#dash').waitFor({ state: 'visible' });
   await page.locator('#btn-settings').click();
-  await button.waitFor({ state: 'visible' });
-  assert.equal(await button.evaluate((element) => typeof element.onclick), 'function');
-  assert.equal(await button.isEnabled(), true);
-  await button.click();
-  await page.waitForFunction(() => document.querySelector('#ai-test-result').textContent.includes('请先填写模型名称'));
+  if (categoryUpgrade) {
+    await page.locator('#settings-category').selectOption('security');
+    assert.equal(await page.locator('[data-settings-panel=security]').isVisible(), true,
+      'new hash-addressed script wires the selector without clearing browser cache');
+    assert.equal(await page.locator('[data-settings-panel=sources]').isVisible(), false);
+    assert.notEqual(await page.locator('#settings-save-state').getAttribute('data-state'), 'dirty');
+  } else {
+    await selectSettingsTab(page, 'delivery');
+    await button.waitFor({ state: 'visible' });
+    assert.equal(await button.evaluate((element) => typeof element.onclick), 'function');
+    assert.equal(await button.isEnabled(), true);
+    await button.click();
+    await page.waitForFunction(() => document.querySelector('#ai-test-result').textContent.includes('请先填写模型名称'));
+  }
   assert.equal(await page.evaluate(() => window.__deniedRequests), 0);
   const newScript = assets.find((asset) => asset.phase === 'fixed' && asset.pathname === '/app.js');
   const newStyle = assets.find((asset) => asset.phase === 'fixed' && asset.pathname === '/style.css');
@@ -186,8 +212,9 @@ async function main() {
   await context.close();
   console.log(JSON.stringify({ ok: true, mixedCacheReproduced: true, repairedWithoutClearingCache: true,
     cachedResponses: cachedRequests.size, clientErrors: errors.length, externalRequests: forbidden.length,
-    checks: ['actual-old-assets-cached', 'new-html-old-script-inert-button', 'zero-mutation-requests',
-      'content-hash-fetches-new-assets', 'new-handler-local-validation', 'no-store-html'] }));
+    feature: categoryUpgrade ? 'mobile-settings-selector' : 'ai-test-button',
+    checks: ['actual-old-assets-cached', 'new-html-old-script-inert-control', 'zero-mutation-requests',
+      'content-hash-fetches-new-assets', categoryUpgrade ? 'new-selector-navigation' : 'new-handler-local-validation', 'no-store-html'] }));
 }
 
 main().catch((error) => {

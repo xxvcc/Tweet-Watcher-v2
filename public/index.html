@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="style.css?v=__STYLE_CSS_VERSION__">
 </head>
 <body>
+<svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs><symbol id="i-settings" viewBox="0 0 24 24"><path d="m12 3 2 3 3-.2.8 3 2.2 2.2-2.2 2.2-.8 3-3-.2-2 3-2-3-3 .2-.8-3L4 11l2.2-2.2.8-3 3 .2Z"/><circle cx="12" cy="11" r="3"/></symbol><symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z"/></symbol><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol><symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4H4v16h6m4-12 4 4-4 4m-6-4h12"/></symbol><symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol><symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8Z"/></symbol><symbol id="i-sources" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol><symbol id="i-link" viewBox="0 0 24 24"><path d="m10 13 4-4m-5 6-2 2a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 2 2-2a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0" transform="translate(1 0)"/></symbol><symbol id="i-send" viewBox="0 0 24 24"><path d="m21 3-7 18-4-8-8-4 19-6ZM10 13 21 3"/></symbol><symbol id="i-tools" viewBox="0 0 24 24"><path d="M14 6a5 5 0 0 0-7 6l-5 5 5 5 5-5a5 5 0 0 0 6-7l-4 4-4-4Z"/></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 4-5 8-8 9-3-1-8-5-8-9V6Z"/><path d="m8 12 3 3 5-6"/></symbol><symbol id="i-save" viewBox="0 0 24 24"><path d="M4 3h13l4 4v14H3V3Zm3 0v6h10V3M7 21v-8h10v8"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 4v16M4 12h16"/></symbol><symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol><symbol id="i-activity" viewBox="0 0 24 24"><path d="M2 12h5l3-8 4 16 3-8h5"/></symbol></defs></svg>
 
 <!-- 登录 / 首次设置 -->
 <div id="auth" class="center hidden">
@@ -34,72 +35,114 @@
 
 <!-- 监控台 -->
 <div id="dash" class="wrap hidden">
-  <div class="top">
-    <div class="brand"><span class="brand-icon">🐦</span> Tweet <em>Watcher v2</em></div>
-    <span class="livepill" id="livepill" role="status" aria-live="polite"><span class="beat"></span> <span id="live-text">连接中…</span></span>
+  <header class="top">
+    <div class="brand"><span class="brand-icon" aria-hidden="true">TW</span><span>Tweet <em>Watcher</em><small>v2</small></span></div>
+    <span class="livepill" id="livepill" role="status" aria-live="polite"><span class="beat"></span><span id="live-text">连接中…</span></span>
     <span class="grow"></span>
-    <button class="ctrl hidden" id="btn-pause" type="button">⏸ 暂停</button>
-    <button class="ctrl hidden" id="btn-resume" type="button">▶ 恢复</button>
-    <button class="ctrl amber" id="btn-settings" type="button" aria-haspopup="dialog" aria-controls="settings" aria-expanded="false">⚙ 设置</button>
-    <button class="icon-btn" id="theme-toggle" title="切换主题" aria-label="切换主题" type="button">🌙</button>
-    <button class="icon-btn" id="logout" title="登出" aria-label="登出" type="button">🚪</button>
-  </div>
-
+    <div class="top-actions">
+      <button class="ctrl hidden" id="btn-pause" type="button"><svg class="icon" aria-hidden="true"><use href="#i-pause"></use></svg>暂停</button>
+      <button class="ctrl hidden" id="btn-resume" type="button"><svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg>恢复</button>
+      <button class="ctrl amber" id="btn-settings" type="button" aria-haspopup="dialog" aria-controls="settings" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-settings"></use></svg>设置</button>
+      <button class="icon-btn" id="theme-toggle" title="切换主题" aria-label="切换主题" type="button"><svg class="icon" aria-hidden="true"><use href="#i-moon"></use></svg></button>
+      <button class="icon-btn" id="logout" title="退出登录" aria-label="退出登录" type="button"><svg class="icon" aria-hidden="true"><use href="#i-logout"></use></svg></button>
+    </div>
+  </header>
   <div id="toast" class="msg hidden" role="status" aria-live="polite"></div>
   <div id="runtime-notice" class="msg notice" role="status" aria-live="polite">正在读取运行模式…</div>
-
+  <div class="page-heading"><div><p class="eyebrow">工作台</p><h1>监控概览</h1></div><p>关注动态，让信息及时抵达。</p></div>
   <div class="stats">
-    <div class="stat"><div class="k">监控账号</div><div class="v tnum" id="stat-accounts">—</div></div>
-    <div class="stat"><div class="k">今日已推送</div><div class="v tnum accent" id="stat-pushes">—</div></div>
-    <div class="stat"><div class="k">运行时长</div><div class="v tnum" id="stat-uptime">—</div></div>
-    <div class="stat"><div class="k">下次检查</div><div class="v tnum" id="stat-next">—</div></div>
+    <div class="stat"><div class="k">监控来源</div><div class="v tnum" id="stat-accounts">—</div><div class="stat-caption">账号、列表与搜索</div></div>
+    <div class="stat"><div class="k">今日推送</div><div class="v tnum accent" id="stat-pushes">—</div><div class="stat-caption">仅统计本次运行</div></div>
+    <div class="stat"><div class="k">待发送</div><div class="v tnum" id="stat-pending">—</div><div class="stat-caption">等待完整投递的推文</div></div>
+    <div class="stat"><div class="k">预计下次检查</div><div class="v tnum" id="stat-next">—</div><div class="stat-caption">按来源频率估算</div></div>
   </div>
-
-  <div class="cols">
-    <div>
-      <div class="sec-h">监控账号 <span class="count" id="acct-count">0</span></div>
+  <main class="cols">
+    <section class="sources-column" aria-labelledby="sources-title">
+      <div class="sec-h"><h2 id="sources-title">监控来源</h2><span class="count" id="acct-count">0</span><span class="section-note">持续关注的动态</span></div>
       <div class="cards" id="cards"></div>
-      <div class="empty-hint hidden" id="cards-empty">还没有监控账号 —— 打开 <b>⚙ 设置</b> 添加。</div>
-    </div>
-    <div>
-      <div class="sec-h">实时活动</div>
-      <div class="feed" id="feed"></div>
-    </div>
-  </div>
+      <div class="empty-hint hidden" id="cards-empty">还没有监控来源<br><span>打开「设置」，添加第一个账号、列表或搜索。</span></div>
+    </section>
+    <section class="overview-panel panel" aria-labelledby="overview-title">
+      <div class="panel-heading"><h2 id="overview-title">运行概况</h2><svg class="icon" aria-hidden="true"><use href="#i-activity"></use></svg></div>
+      <details id="session-details" class="session-details">
+        <summary><span class="overview-label">X 登录会话</span><span class="summary-value"><span id="session-summary">正在读取…</span><svg class="icon" aria-hidden="true"><use href="#i-chevron"></use></svg></span></summary>
+        <div id="session-health" class="session-health" aria-live="polite"></div>
+      </details>
+      <div class="overview-row"><span class="overview-label">历史补采</span><span id="backfill-progress">正在读取…</span></div>
+      <div class="overview-row"><span class="overview-label">AI 翻译</span><span id="overview-ai">正在读取…</span></div>
+      <div class="overview-row"><span class="overview-label">Telegram</span><span id="overview-delivery">正在读取…</span></div>
+      <div class="overview-footer"><span>本次运行</span><span class="tnum" id="stat-uptime">—</span></div>
+    </section>
+    <section class="activity-panel panel" aria-labelledby="activity-title">
+      <div class="panel-heading"><h2 id="activity-title">最近活动 <span class="count" id="feed-count">0</span></h2><label class="sr-only" for="activity-filter">活动筛选</label><select id="activity-filter"><option value="important">重要活动</option><option value="all">全部活动</option><option value="errors">仅异常</option></select></div>
+      <div class="feed" id="feed" role="log" aria-label="最近活动"></div>
+    </section>
+  </main>
 </div>
 
 <!-- 设置抽屉 -->
 <div id="settings" class="drawer-overlay hidden">
   <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-    <div class="drawer-head">
-      <h2 id="settings-title">⚙ 设置</h2>
-      <button class="icon-btn" id="settings-close" title="关闭" aria-label="关闭设置" type="button">✕</button>
-    </div>
-    <div class="drawer-body">
-
-      <div class="section">
-        <h3>监控账号</h3>
-        <div class="acct-head">
-          <span class="col-name">用户名</span>
-          <span class="col-num">条数</span>
-          <span class="col-num">频率(秒)</span>
-          <span class="col-x"></span>
-        </div>
+    <header class="drawer-head"><div><p class="eyebrow">偏好与连接</p><h2 id="settings-title">设置</h2></div><button class="icon-btn" id="settings-close" title="关闭" aria-label="关闭设置" type="button"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button></header>
+    <div class="settings-shell">
+      <div class="settings-mobile-nav">
+        <label for="settings-category">设置分类 <span>共 5 项</span></label>
+        <select id="settings-category" aria-label="选择设置分类">
+          <option value="sources">监控来源</option>
+          <option value="connections">X 登录会话</option>
+          <option value="delivery">推送与翻译</option>
+          <option value="tools">查询工具</option>
+          <option value="security">安全与环境</option>
+        </select>
+      </div>
+      <nav class="settings-nav" role="tablist" aria-label="设置分类">
+        <button class="settings-tab" id="settings-tab-sources" type="button" role="tab" data-settings-tab="sources" aria-controls="settings-panel-sources" aria-selected="true" tabindex="0"><svg class="icon" aria-hidden="true"><use href="#i-sources"></use></svg><span>监控来源</span></button>
+        <button class="settings-tab" id="settings-tab-connections" type="button" role="tab" data-settings-tab="connections" aria-controls="settings-panel-connections" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-link"></use></svg><span>X 登录会话</span></button>
+        <button class="settings-tab" id="settings-tab-delivery" type="button" role="tab" data-settings-tab="delivery" aria-controls="settings-panel-delivery" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-send"></use></svg><span>推送与翻译</span></button>
+        <button class="settings-tab" id="settings-tab-tools" type="button" role="tab" data-settings-tab="tools" aria-controls="settings-panel-tools" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-tools"></use></svg><span>查询工具</span></button>
+        <button class="settings-tab" id="settings-tab-security" type="button" role="tab" data-settings-tab="security" aria-controls="settings-panel-security" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-shield"></use></svg><span>安全与环境</span></button>
+      </nav>
+      <div class="drawer-body">
+        <section class="settings-panel" id="settings-panel-sources" data-settings-panel="sources" role="tabpanel" aria-labelledby="settings-tab-sources" tabindex="0">
+          <div class="settings-intro"><h3>监控来源</h3><p>添加关注的账号、列表和搜索，调整检查频率与内容筛选。</p></div>
+      <div class="sources-editor">
         <div id="acct-list"></div>
-        <button class="btn-add" id="btn-add-acct" type="button">➕ 添加账号</button>
+        <button class="btn-add" id="btn-add-acct" type="button"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>添加来源</button>
+        <details class="help-details"><summary>来源与筛选说明</summary>
         <div class="hint">条数=每页请求条数，抓取会保留完整返回页；频率=自动监控间隔（≥30 秒）。修改后请保存；只读模式仅支持手动测试。</div>
+        <div class="hint">筛选只影响以后采集的新记录；包含词任一匹配，排除词任一匹配则不推送。帖子类型可重叠，取消任一相关类型即不推送。修改规则不会重新推送历史内容。</div>
+        <div class="hint">更改来源标识或“帖子与回复”范围视为替换来源：保存后建立新基线，并移除旧来源的待发送队列。需要保留旧队列时，请新增一行。</div>
+        </details>
       </div>
 
+        </section>
+        <section class="settings-panel hidden" id="settings-panel-connections" data-settings-panel="connections" role="tabpanel" aria-labelledby="settings-tab-connections" tabindex="0">
+          <div class="settings-intro"><h3>X 登录会话</h3><p>管理采集使用的登录凭据，并验证最近一次请求是否可用。</p></div>
       <div class="section">
-        <h3>Twitter 认证</h3>
+        <h3>X 默认登录会话</h3>
         <label for="auth_token">auth_token</label>
         <input type="text" class="secret" id="auth_token" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="4096" placeholder="从浏览器 Cookie 获取">
         <label for="ct0">ct0</label>
         <input type="text" class="secret" id="ct0" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="4096" placeholder="从浏览器 Cookie 获取">
         <div class="hint">F12 → Application → Cookies → x.com。已保存的留空即保持不变。</div>
-        <button class="btn-ghost btn-sm" id="btn-test-collector" type="button">🧪 测试 X 采集</button>
+        <button class="btn-ghost btn-sm" id="btn-test-collector" type="button">测试 X 采集</button>
+        <label for="session-test-user" class="mt-12">会话验证目标用户名</label>
+        <input id="session-test-user" maxlength="15" placeholder="例如 elonmusk" autocomplete="off">
+        <button class="btn-ghost btn-sm" id="btn-test-default-session" data-query="true" type="button">验证默认会话</button>
+        <div class="hint mt-12">验证会访问该目标，成功仅代表最近这次请求可用。</div>
+        <div id="x-test-result" class="query-result hidden" role="status" aria-live="polite"></div>
       </div>
 
+      <div class="section">
+        <h3>额外 X 登录会话</h3>
+        <div id="session-list"></div>
+        <button class="btn-add" id="btn-add-session" type="button">添加会话</button>
+        <div class="hint">登录会话与监控来源不同。已有凭据留空保留；删除会话并保存会删除其凭据。代理可选，须填写端口，仅支持不含用户名密码的 HTTP(S) 地址。</div>
+      </div>
+
+        </section>
+        <section class="settings-panel hidden" id="settings-panel-delivery" data-settings-panel="delivery" role="tabpanel" aria-labelledby="settings-tab-delivery" tabindex="0">
+          <div class="settings-intro"><h3>推送与翻译</h3><p>设置消息接收位置、翻译服务以及媒体展示方式。</p></div>
       <div class="section">
         <h3>Telegram 推送</h3>
         <div class="row">
@@ -112,7 +155,7 @@
             <input type="text" id="tg_chat_id" inputmode="text" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="33" placeholder="从 @userinfobot 获取">
           </div>
         </div>
-        <button class="btn-ghost btn-sm" id="btn-test-tg" type="button">🧪 测试 Telegram 推送</button>
+        <button class="btn-ghost btn-sm" id="btn-test-tg" type="button">发送 Telegram 测试</button>
       </div>
 
       <div class="section" id="ai-translation-settings">
@@ -136,20 +179,54 @@
       </div>
 
       <div class="section">
-        <h3>其他</h3>
+        <h3>内容展示与补充</h3>
+        <label for="media_mode">媒体展示</label>
+        <select id="media_mode"><option value="links">媒体链接</option><option value="photos">发送图片，视频保留链接</option><option value="all">发送图片和视频</option></select>
+        <label for="enrichment_mode">按需补充内容</label>
+        <select id="enrichment_mode"><option value="off">关闭额外查询</option><option value="detail">查询推文详情</option><option value="thread">查询对话背景</option></select>
+        <label for="enrichment_limit">每次补充条数上限</label>
+        <input id="enrichment_limit" type="number" min="1" max="5" value="2">
+        <div class="hint">额外查询有预算限制；补充失败保留原始内容，不改变采集与投递确认。</div>
+      </div>
+
+        </section>
+        <section class="settings-panel hidden" id="settings-panel-tools" data-settings-panel="tools" role="tabpanel" aria-labelledby="settings-tab-tools" tabindex="0">
+          <div class="settings-intro"><h3>查询工具</h3><p>导入列表成员，或单独查看一条推文及其对话。</p></div>
+      <div class="section">
+        <h3>从 List 导入账号</h3>
+        <label for="import-list-id">List ID</label>
+        <input id="import-list-id" inputmode="numeric" maxlength="32" placeholder="X List 链接中的数字 ID">
+        <button class="btn-ghost btn-sm" id="btn-list-preview" data-query="true" type="button">预览成员</button>
+        <div id="list-preview" class="query-result hidden" aria-live="polite"></div>
+        <button class="btn-ghost btn-sm hidden" id="btn-list-import" type="button">将勾选账号加入草稿</button>
+        <div class="hint mt-12">仅导入勾选的账号，保存后逐账号建立基线；不会自动跟随 List 成员变化。</div>
+      </div>
+
+      <div class="section">
+        <h3>查看推文与对话</h3>
+        <label for="inspect-tweet-id">推文 ID</label>
+        <input id="inspect-tweet-id" inputmode="numeric" maxlength="32" placeholder="X 推文链接中的数字 ID">
+        <div class="inline-actions"><button class="btn-ghost btn-sm" id="btn-inspect-detail" data-query="true" type="button">查看详情</button> <button class="btn-ghost btn-sm" id="btn-inspect-thread" data-query="true" type="button">查看对话</button></div>
+        <div class="hint">只读查询，不加入待发队列、不发送 Telegram。对话结果可能包含其他作者。</div>
+        <div id="inspect-result" class="query-result hidden" role="status" aria-live="polite"></div>
+      </div>
+
+        </section>
+        <section class="settings-panel hidden" id="settings-panel-security" data-settings-panel="security" role="tabpanel" aria-labelledby="settings-tab-security" tabindex="0">
+          <div class="settings-intro"><h3>安全与环境</h3><p>管理访问密码，检查服务器上的采集环境。</p></div>
+      <div class="section">
+        <h3>采集环境</h3>
         <label>采集程序</label>
         <div id="collector-name" class="hint">twscrape</div>
         <div class="inline-actions">
-          <button class="btn-ghost btn-sm" id="btn-detect-collector" type="button">🔍 检查安装</button>
+          <button class="btn-ghost btn-sm" id="btn-detect-collector" type="button">检查安装</button>
         </div>
         <div class="hint" id="collector-hint">采集器由服务器固定部署。点击“检查安装”确认环境，或测试已保存的 X Cookie。</div>
       </div>
 
-      <button class="btn-primary btn-full" id="btn-save" type="button">💾 保存配置</button>
-
-      <div class="section mt-16">
+      <div class="section">
         <h3>安全</h3>
-        <button class="toggle" id="pw-toggle" type="button" aria-controls="pw-form" aria-expanded="false">🔑 修改访问密码</button>
+        <button class="toggle" id="pw-toggle" type="button" aria-controls="pw-form" aria-expanded="false">修改访问密码</button>
         <div id="pw-form" class="hidden mt-12">
           <label for="old_pw">当前密码</label>
           <input type="password" id="old_pw" autocomplete="current-password" maxlength="72">
@@ -157,11 +234,14 @@
           <input type="password" id="new_pw" autocomplete="new-password" maxlength="72" placeholder="至少 8 位">
           <label for="new_pw2">确认新密码</label>
           <input type="password" id="new_pw2" autocomplete="new-password" maxlength="72" placeholder="再输一次">
-          <button class="btn-ghost btn-sm" id="btn-chpw" type="button">✅ 修改密码</button>
+          <button class="btn-ghost btn-sm" id="btn-chpw" type="button">修改密码</button>
         </div>
       </div>
 
+        </section>
+      </div>
     </div>
+    <footer class="drawer-footer"><div id="settings-save-state" role="status" aria-live="polite" data-state="clean">所有修改将在保存后生效</div><button class="btn-primary" id="btn-save" type="button"><svg class="icon" aria-hidden="true"><use href="#i-save"></use></svg>保存配置</button></footer>
   </div>
 </div>
 

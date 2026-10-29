@@ -112,6 +112,323 @@ const noSendTelegram = {
   sendMessage: async () => { throw new Error('sendMessage should not be called'); },
 };
 
+test('pause or disabling AI during optional detail lookup blocks the stale translation request', async () => {
+  for (const action of ['pause', 'disable-ai']) {
+    let release, started;
+    const pending = new Promise((resolve) => { release = resolve; });
+    const began = new Promise((resolve) => { started = resolve; });
+    let translations = 0, sends = 0;
+    const config = { tg_chat_id: '1', paused: false, revision: 1, enrichment_mode: 'detail',
+      ai_translation_enabled: true, accounts: [account('alice')] };
+    const harness = loadWorker({ config: () => config, baselineIds: { alice: ['1'] },
+      twscrape: {
+        async fetchTweets() { return completeTimeline([{ id: '2', text: 'Original English' }], '2'); },
+        async inspectTweet() { started(); await pending; return { ok: true, tweets: [] }; },
+      },
+      translation: { async translateTweet() { translations++; return { ok: true, text: '译文' }; } },
+      telegram: { formatTweet: (tweet) => tweet.text, async sendMessage() { sends++; return { ok: true }; } },
+    });
+    let tick;
+    try {
+      tick = harness.worker.tick();
+      await began;
+      if (action === 'pause') { config.paused = true; harness.worker.setPaused(true); }
+      else { config.ai_translation_enabled = false; harness.worker.configChanged(++config.revision, { paused: false }); }
+      release();
+      await tick;
+      assert.equal(translations, 0, action);
+      assert.equal(sends, 0, action);
+      assert.equal(harness.files.get('delivery_state.json').accounts.alice.pending[0].id, '2');
+    } finally { release(); if (tick) await tick; harness.restore(); }
+  }
+});
+
+test('slow translation does not block acquisition of the next source', async (t) => {
+  t.mock.method(global, 'setTimeout', (fn) => { queueMicrotask(fn); return 0; });
+  let release;
+  let notifySecond;
+  const secondCollected = new Promise((resolve) => { notifySecond = resolve; });
+  const wait = new Promise((resolve) => { release = resolve; });
+  let translations = 0;
+  const sent = [];
+  const harness = loadWorker({
+    config: { tg_chat_id: '1', paused: false, ai_translation_enabled: true, accounts: [account('alice'), account('bob')] },
+    baselineIds: { alice: ['1'], bob: ['10'] },
+    twscrape: { async fetchTweets({ username }) {
+      if (username === 'bob') { notifySecond(); return completeTimeline([{ id: '11', text: 'second' }], '11'); }
+      return completeTimeline([{ id: '2', text: 'first' }], '2');
+    } },
+    translation: { async translateTweet() { translations++; if (translations === 1) await wait; return { ok: true, text: '译文' }; } },
+    telegram: { formatTweet: (tweet) => tweet.id, async sendMessage({ text }) { sent.push(text); return { ok: true }; } },
+  });
+  try {
+    const tick = harness.worker.tick();
+    await secondCollected;
+    assert.equal(translations, 1);
+    assert.deepEqual(sent, []);
+    release();
+    await tick;
+    assert.deepEqual(sent, ['2', '11']);
+  } finally { release(); harness.restore(); }
+});
+
+test('production tick can collect another interval while a prior delivery awaits AI', async (t) => {
+  t.mock.method(global, 'setTimeout', (fn) => { queueMicrotask(fn); return 0; });
+  const oldNow = Date.now;
+  let now = 1700000000000;
+  Date.now = () => now;
+  let release;
+  const wait = new Promise((resolve) => { release = resolve; });
+  let round = 0;
+  const sent = [];
+  const harness = loadWorker({
+    config: { tg_chat_id: '1', paused: false, ai_translation_enabled: true, accounts: [account('alice')] },
+    baselineIds: { alice: ['1'] },
+    twscrape: { async fetchTweets() { const id = String(++round + 1); return completeTimeline([{ id, text: id }], id); } },
+    translation: { async translateTweet() { await wait; return { ok: true, text: '译文' }; } },
+    telegram: { formatTweet: (tweet) => tweet.id, async sendMessage({ text }) { sent.push(text); return { ok: true }; } },
+  });
+  try {
+    await harness.worker.tick({ waitForDelivery: false });
+    now += 31000;
+    await harness.worker.tick({ waitForDelivery: false });
+    assert.equal(round, 2);
+    assert.deepEqual(capturedState(harness).pending.map((tweet) => tweet.id), ['2', '3']);
+    release();
+    await harness.worker.tick();
+    assert.deepEqual(sent, ['2', '3']);
+  } finally { release(); Date.now = oldNow; harness.restore(); }
+});
+
+test('one exhausted X operation cools down every target sharing that login while delivery remains available', async (t) => {
+  t.mock.method(global, 'setTimeout', (fn) => { queueMicrotask(fn); return 0; });
+  const polled = [];
+  const sent = [];
+  const harness = loadWorker({
+    config: { tg_chat_id: '1', paused: false, accounts: [account('alice'), account('bob')] },
+    baselineIds: { alice: ['1'], bob: ['10'] },
+    twscrape: { async fetchTweets({ username }) {
+      polled.push(username);
+      return { ...completeTimeline([{ id: '2', text: 'last quota page' }], '2'),
+        rateLimit: { operation: 'UserTweets', remaining: 0, resetAt: Date.now() + 60000 } };
+    } },
+    telegram: { formatTweet: (tweet) => tweet.id, async sendMessage({ text }) { sent.push(text); return { ok: true }; } },
+  });
+  try {
+    await harness.worker.tick();
+    assert.deepEqual(polled, ['alice']);
+    assert.deepEqual(sent, ['2']);
+    assert.match(harness.state.status.accounts.bob.lastError, /冷却/);
+    assert.equal(harness.worker.getDiagnostics().sessions.default.status, 'rate-limited');
+  } finally { harness.restore(); }
+});
+
+test('ready catchup replay after capture and failed cleanup survives restart during cooldown without claiming network success', async (t) => {
+  t.mock.method(global, 'setTimeout', (fn) => { queueMicrotask(fn); return 0; });
+  const files = new Map();
+  const requests = [], sent = [];
+  let ready = false, cleanupCalls = 0;
+  const options = {
+    files, config: { tg_chat_id: '1', paused: false, accounts: [account('alice')] },
+    twscrape: {
+      getCatchups: () => ready ? { alice: { status: 'ready', sessionId: 'default' } } : {},
+      async fetchTweets(input) {
+        requests.push({ localOnly: input.localOnly, sinceId: input.sinceId });
+        if (ready) {
+          assert.equal(input.localOnly, true);
+          assert.equal(input.sinceId, '2', 'replay uses the already committed acquisition checkpoint');
+          return completeTimeline([{ id: '2', text: 'already captured' }], '2');
+        }
+        ready = true;
+        return { ...completeTimeline([{ id: '2', text: 'already captured' }], '2'),
+          rateLimit: { operation: 'UserTweets', remaining: 0, resetAt: Date.now() + 600000 } };
+      },
+      ackCatchup() { if (++cleanupCalls === 1) throw new Error('synthetic cleanup failure'); ready = false; },
+    },
+    telegram: { formatTweet: (tweet) => tweet.id, async sendMessage({ text }) { sent.push(text); return { ok: true }; } },
+  };
+  let harness = loadWorker({ ...options, baselineIds: { alice: ['1'] } });
+  try {
+    await harness.worker.tick();
+    assert.equal(files.get('delivery_state.json').accounts.alice.acquisitionWatermark, '2');
+    assert.equal(ready, true);
+    const health = structuredClone(files.get('x_session_health.json'));
+    assert.equal(harness.worker.getDiagnostics().sessions.default.status, 'rate-limited');
+    harness.restore();
+    harness = loadWorker(options);
+    await harness.worker.tick();
+    assert.deepEqual(requests, [{ localOnly: undefined, sinceId: '1' }, { localOnly: true, sinceId: '2' }]);
+    assert.equal(ready, false);
+    assert.equal(cleanupCalls, 2);
+    assert.deepEqual(sent, ['2']);
+    assert.deepEqual(files.get('x_session_health.json'), health, 'local replay changes neither success timestamps nor cooldown');
+    assert.equal(harness.worker.getDiagnostics().sessions.default.status, 'rate-limited');
+  } finally { harness.restore(); }
+});
+
+test('pause during local catchup replay preserves the stage and confirms an earlier in-flight text part before resuming media', async (t) => {
+  t.mock.method(global, 'setTimeout', (fn) => { queueMicrotask(fn); return 0; });
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  let releaseText, textStarted, releaseReplay, replayStarted;
+  const textWait = new Promise((resolve) => { releaseText = resolve; });
+  const textBegan = new Promise((resolve) => { textStarted = resolve; });
+  const replayWait = new Promise((resolve) => { releaseReplay = resolve; });
+  const replayBegan = new Promise((resolve) => { replayStarted = resolve; });
+  let ready = false, cleanupCalls = 0;
+  const sent = [];
+  const config = { tg_chat_id: '1', paused: false, revision: 1, accounts: [account('alice')] };
+  const harness = loadWorker({ config: () => config, baselineIds: { alice: ['1'] },
+    twscrape: {
+      getCatchups: () => ready ? { alice: { status: 'ready', sessionId: 'default' } } : {},
+      async fetchTweets(input) {
+        if (ready) {
+          assert.equal(input.localOnly, true);
+          replayStarted(); await replayWait;
+          return completeTimeline([{ id: '2', text: 'with photo' }], '2');
+        }
+        ready = true;
+        return { ...completeTimeline([{ id: '2', text: 'with photo' }], '2'),
+          rateLimit: { operation: 'UserTweets', remaining: 0, resetAt: now + 600000 } };
+      },
+      ackCatchup() { if (++cleanupCalls === 1) throw new Error('synthetic cleanup failure'); ready = false; },
+    },
+    telegram: {
+      planTweet: () => [{ kind: 'text', text: 'Text' }, { kind: 'photo', url: 'https://pbs.twimg.com/media/example.jpg' }],
+      async sendTweetPart({ part }) {
+        sent.push(part.kind);
+        if (part.kind === 'text') { textStarted(); await textWait; }
+        return { ok: true };
+      },
+    },
+  });
+  let replayTick;
+  try {
+    await harness.worker.tick({ waitForDelivery: false });
+    await textBegan;
+    const health = structuredClone(harness.files.get('x_session_health.json'));
+    now += 31000;
+    replayTick = harness.worker.tick({ waitForDelivery: false });
+    await replayBegan;
+    config.paused = true; harness.worker.setPaused(true);
+    releaseReplay(); await replayTick;
+    assert.equal(cleanupCalls, 1, 'cancelled replay cannot acknowledge its stage');
+    assert.equal(ready, true);
+    releaseText();
+    await new Promise(setImmediate);
+    assert.deepEqual(sent, ['text']);
+    assert.equal(capturedState(harness).pending[0].delivery.next, 1, 'remote success remains durable despite pause');
+    assert.deepEqual(harness.files.get('x_session_health.json'), health);
+    config.paused = false; harness.worker.configChanged(++config.revision, { paused: false });
+    await harness.worker.tick();
+    assert.equal(ready, false);
+    assert.deepEqual(sent, ['text', 'photo']);
+    assert.equal(capturedState(harness).pending.length, 0);
+    assert.deepEqual(harness.files.get('x_session_health.json'), health);
+  } finally {
+    releaseText(); releaseReplay(); if (replayTick) await replayTick;
+    await new Promise(setImmediate); harness.restore();
+  }
+});
+
+test('filtered records advance verified acquisition and are audited without pretending to be sent', async () => {
+  const harness = loadWorker({
+    config: { tg_chat_id: '1', paused: false, accounts: [{ ...account('alice'), filters: { exclude: ['spam'] } }] },
+    baselineIds: { alice: ['1'] },
+    twscrape: { async fetchTweets() { return completeTimeline([{ id: '2', text: 'spam' }], '2'); } },
+    telegram: noSendTelegram,
+  });
+  try {
+    await harness.worker.tick();
+    const saved = capturedState(harness);
+    assert.equal(saved.acquisitionWatermark, '2');
+    assert.deepEqual(saved.sent, ['1']);
+    assert.deepEqual(saved.pending, []);
+    assert.equal(saved.dispositions[0].id, '2');
+    assert.equal(saved.dispositions[0].status, 'filtered');
+    assert.match(saved.dispositions[0].ruleVersion, /^[a-f0-9]{64}$/);
+  } finally { harness.restore(); }
+});
+
+test('a retained media plan resumes after the confirmed text part across worker restart', async (t) => {
+  t.mock.method(global, 'setTimeout', (fn) => { queueMicrotask(fn); return 0; });
+  const files = new Map();
+  let failPhoto = true;
+  const partsSent = [];
+  let plans = 0;
+  const options = {
+    files,
+    config: { tg_chat_id: '1', paused: false, media_mode: 'photos', accounts: [account('alice')] },
+    twscrape: { async fetchTweets() { return completeTimeline([{ id: '2', text: 'with photo' }], '2'); } },
+    telegram: {
+      planTweet() { plans++; return [{ kind: 'text', text: 'text part' }, { kind: 'photo', url: 'https://pbs.twimg.com/media/synthetic.jpg' }]; },
+      async sendTweetPart({ part }) {
+        partsSent.push(part.kind);
+        return part.kind === 'photo' && failPhoto ? { ok: false, permanent: true } : { ok: true };
+      },
+    },
+  };
+  let harness = loadWorker({ ...options, baselineIds: { alice: ['1'] } });
+  try {
+    await harness.worker.tick();
+    assert.deepEqual(partsSent, ['text', 'photo']);
+    assert.equal(capturedState(harness).pending[0].delivery.next, 1);
+    assert.equal(files.get('delivery_state.json').version, 2);
+    harness.restore();
+    failPhoto = false;
+    harness = loadWorker(options);
+    await harness.worker.tick();
+    assert.deepEqual(partsSent, ['text', 'photo', 'photo']);
+    assert.equal(plans, 1);
+    assert.deepEqual(capturedState(harness).pending, []);
+  } finally { harness.restore(); }
+});
+
+test('account and List overlap deliver one identity to the same destination', async (t) => {
+  t.mock.method(global, 'setTimeout', (fn) => { queueMicrotask(fn); return 0; });
+  const sent = [];
+  const harness = loadWorker({
+    config: { tg_chat_id: '1', paused: false, accounts: [account('alice'), {
+      source_type: 'list', list_id: '77', fetch_count: 10, check_interval: 30,
+    }] },
+    baselineIds: { alice: ['1'], 'list:77': ['1'] },
+    twscrape: { async fetchTweets() { return completeTimeline([{ id: '2', author_username: 'alice', text: 'shared identity' }], '2'); } },
+    telegram: { formatTweet: (tweet) => tweet.id, async sendMessage({ text }) { sent.push(text); return { ok: true }; } },
+  });
+  try {
+    await harness.worker.tick();
+    assert.deepEqual(sent, ['2']);
+    const saved = harness.files.get('delivery_state.json');
+    for (const key of ['alice', 'list:77']) {
+      assert.equal(saved.accounts[key].acquisitionWatermark, '2');
+      assert.deepEqual(saved.accounts[key].pending, []);
+    }
+  } finally { harness.restore(); }
+});
+
+test('a late search hit inside the verified overlap is not lost below the previous max ID', async (t) => {
+  t.mock.method(global, 'setTimeout', (fn) => { queueMicrotask(fn); return 0; });
+  const query = 'synthetic topic';
+  const key = 'search:' + require('node:crypto').createHash('sha256').update(query).digest('hex').slice(0, 24);
+  const previous = baselineState({ [key]: ['100'] });
+  previous.version = 2;
+  previous.accounts[key].discoveryFloor = '1';
+  const sent = [];
+  const harness = loadWorker({
+    config: { tg_chat_id: '1', paused: false, accounts: [{ source_type: 'search', query, fetch_count: 10, check_interval: 30 }] },
+    storedDelivery: previous,
+    twscrape: { async fetchTweets() { return { ...completeTimeline([
+      { id: '90', author_username: 'bob', text: 'late indexing' }, { id: '110', author_username: 'carol', text: 'new' },
+    ], '110'), discovery: true }; } },
+    telegram: { formatTweet: (tweet) => tweet.id, async sendMessage({ text }) { sent.push(text); return { ok: true }; } },
+  });
+  try {
+    await harness.worker.tick();
+    assert.deepEqual(sent, ['90', '110']);
+    assert.equal(harness.files.get('delivery_state.json').accounts[key].acquisitionWatermark, '110');
+  } finally { harness.restore(); }
+});
+
 test('translation runs after durable capture and is reused across Telegram retries without altering original evidence', async (t) => {
   t.mock.method(global, 'setTimeout', (fn) => { queueMicrotask(fn); return 0; });
   const original = { id: '2', text: 'This is the original English post.', lang: 'en',
@@ -1260,7 +1577,7 @@ test('a case-only username edit preserves and delivers the same account queue', 
     await harness.worker.tick();
     assert.deepEqual(delivered, ['retained body', 'third']);
     assert.deepEqual(Object.keys(harness.files.get('delivery_state.json').accounts), ['alice']);
-    assert.equal(harness.state.status.accounts.ALICE.ok, true);
+    assert.equal(harness.state.status.accounts.alice.ok, true); // runtime identity is now the stable source key
   } finally { harness.restore(); restoreTimers(); }
 });
 
@@ -1394,7 +1711,8 @@ test('read-only scheduler never touches config or outbox while manual collection
     assert.equal(result.ok, true);
     assert.equal(result.collector, 'twscrape');
     assert.equal(fetches, 1);
-    assert.equal(harness.writes.length, 0);
+    assert.equal(harness.writes.filter((write) => write.name !== 'x_session_health.json').length, 0);
+    assert.equal(harness.writes.filter((write) => write.name === 'x_session_health.json').length, 2);
   } finally { harness.restore(); }
 });
 
