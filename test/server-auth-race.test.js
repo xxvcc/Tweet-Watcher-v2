@@ -12,10 +12,9 @@ let savePasswordHash = () => {};
 let configWrites = 0;
 let savedConfigs = [];
 let persistedRevision = 3;
-let saveSecrets = () => { configWrites++; };
+let saveSettings = (cfg) => { recordConfig(cfg); };
 let stateLogs = [];
 let configPersisted = true;
-let configRemovals = 0;
 const recordConfig = (config) => {
   configWrites++; savedConfigs.push(config);
   if (Number.isSafeInteger(config.revision)) persistedRevision = config.revision;
@@ -47,6 +46,7 @@ const configMock = {
   }),
   getSecrets: () => ({ auth_token: '', ct0: '', tg_bot_token: '' }),
   normalizeAccounts: () => [],
+  validAccounts: (value) => Array.isArray(value) && value.length === 0,
   validRevision: (value) => Number.isSafeInteger(value) && value >= 0,
   nextRevision: (value) => value + 1,
   validChatId: (value) => {
@@ -56,7 +56,7 @@ const configMock = {
     return /^-?\d{1,32}$/.test(String(value));
   },
   saveConfig: (...args) => saveConfig(...args),
-  saveSecrets: (...args) => saveSecrets(...args),
+  saveSettings: (...args) => saveSettings(...args),
 };
 
 const stateMock = {
@@ -72,7 +72,6 @@ const moduleMocks = new Map([
   [require.resolve('../lib/config'), configMock],
   [require.resolve('../lib/store'), {
     sweepTmp: () => {},
-    removeJSON: () => { configRemovals++; persistedRevision = 0; },
   }],
   [require.resolve('../lib/twscrape'), { detectTwscrape: async () => ({ found: false }) }],
   [require.resolve('../lib/state'), stateMock],
@@ -347,83 +346,64 @@ test('configuration writes cannot bypass optimistic locking by omitting the revi
   assert.equal(configWrites, 0);
 });
 
-test('secret write failures roll back both config content and its persistent revision', { concurrency: false }, async (t) => {
+test('an uncertain settings commit cancels old work and never claims rollback or success', { concurrency: false }, async (t) => {
   if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
   persistedRevision = 3;
   status.configRevision = 3;
-  configWrites = 0;
   savedConfigs = [];
-  saveSecrets = () => { throw new Error('injected secrets write failure'); };
+  saveSettings = () => { throw new Error('injected transaction write failure'); };
   try {
     const response = await fetch(`${base}/api/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: 'tw_sess=x; tw_csrf=y', 'x-csrf': 'y' },
       body: JSON.stringify({ config_revision: 3, tg_chat_id: '-99' }),
     });
+    const body = await response.json();
     assert.equal(response.status, 500);
+    assert.equal(body.ok, false);
+    assert.match(body.error, /未确认/);
+    assert.doesNotMatch(body.error, /已回滚|injected/);
+    assert.equal(status.configRevision, 3, 'a failed commit cannot advertise an unpersisted revision');
     assert.equal(persistedRevision, 3);
-    assert.equal(status.configRevision, 3);
-    assert.equal(savedConfigs.length, 2);
-    assert.equal(savedConfigs[0].revision, 4);
-    assert.equal(savedConfigs[1].revision, 3);
-  } finally {
-    saveSecrets = () => { configWrites++; };
-  }
+    assert.equal(savedConfigs.length, 0, 'the route must not issue a separate rollback write');
+  } finally { saveSettings = (cfg) => recordConfig(cfg); }
 });
 
-test('a failed first secret write restores the absence of config.json', { concurrency: false }, async (t) => {
+test('config and status reads publish recovered revisions without requiring a scheduler tick', { concurrency: false }, async (t) => {
   if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
-  persistedRevision = 0;
-  status.configRevision = 0;
-  configPersisted = false;
-  configRemovals = 0;
-  savedConfigs = [];
-  saveSecrets = () => { throw new Error('injected first secrets write failure'); };
-  try {
-    const response = await fetch(`${base}/api/config`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: 'tw_sess=x; tw_csrf=y', 'x-csrf': 'y' },
-      body: JSON.stringify({ config_revision: 0, accounts: [{ username: 'alice' }] }),
-    });
-    assert.equal(response.status, 500);
-    assert.equal(configRemovals, 1);
-    assert.equal(savedConfigs.length, 1);
-    assert.equal(persistedRevision, 0);
-    assert.equal(status.configRevision, 0);
-  } finally {
-    configPersisted = true;
-    saveSecrets = () => { configWrites++; };
+  for (const endpoint of ['config', 'status']) {
+    status.configRevision = 3;
+    persistedRevision = 4;
+    const response = await fetch(`${base}/api/${endpoint}`, { headers: { Cookie: 'tw_sess=x' } });
+    assert.equal(response.status, 200);
+    assert.equal(status.configRevision, 4);
+    const body = await response.json();
+    assert.equal(endpoint === 'config' ? body.configRevision : body.status.configRevision, 4);
   }
 });
 
-test('a failed rollback reports the effective persistent revision without hiding partial commit', { concurrency: false }, async (t) => {
+test('settings route submits config and secrets as one operation before broadcasting revision', { concurrency: false }, async (t) => {
   if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
   persistedRevision = 3;
   status.configRevision = 3;
-  configWrites = 0;
-  savedConfigs = [];
-  let attempts = 0;
-  saveConfig = (config) => {
-    attempts++;
-    if (attempts === 2) throw new Error('injected rollback failure');
-    recordConfig(config);
+  let calls = 0;
+  saveSettings = (cfg, secrets) => {
+    calls++;
+    assert.equal(status.configRevision, 3);
+    assert.equal(cfg.tg_chat_id, '-99');
+    assert.equal(secrets.tg_bot_token, 'synthetic-bot');
+    recordConfig(cfg);
   };
-  saveSecrets = () => { throw new Error('injected secrets write failure'); };
   try {
     const response = await fetch(`${base}/api/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: 'tw_sess=x; tw_csrf=y', 'x-csrf': 'y' },
-      body: JSON.stringify({ config_revision: 3, tg_chat_id: '-100' }),
+      body: JSON.stringify({ config_revision: 3, tg_chat_id: '-99', tg_bot_token: 'synthetic-bot' }),
     });
-    const body = await response.json();
-    assert.equal(response.status, 500);
-    assert.equal(body.partial, true);
-    assert.equal(persistedRevision, 4);
+    assert.equal(response.status, 200);
+    assert.equal(calls, 1);
     assert.equal(status.configRevision, 4);
-  } finally {
-    saveConfig = recordConfig;
-    saveSecrets = () => { configWrites++; };
-  }
+  } finally { saveSettings = (cfg) => recordConfig(cfg); }
 });
 
 test('unsafe numeric Telegram chat IDs are rejected before string conversion', { concurrency: false }, async (t) => {
@@ -496,5 +476,89 @@ test('configuration API exposes a fixed collector and cannot select an executabl
   assert.equal(Object.hasOwn(await saved.json(), 'bird_path'), false);
   assert.deepEqual(savedConfigs, [{
     tg_chat_id: '1', paused: false, accounts: [], revision: 4,
+    ai_translation_enabled: false, ai_base_url: 'https://api.openai.com/v1', ai_model: '',
   }]);
+});
+
+async function postAiSettings(patch) {
+  return fetch(`${base}/api/config`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: 'tw_sess=x; tw_csrf=y', 'x-csrf': 'y' },
+    body: JSON.stringify({ config_revision: persistedRevision, ...patch }) });
+}
+
+test('AI configuration remains optional for old clients and GET never exposes a stored key', { concurrency: false }, async (t) => {
+  if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
+  const oldGetConfig = configMock.getConfig, oldGetSecrets = configMock.getSecrets, oldSave = saveSettings;
+  let committed;
+  try {
+    persistedRevision = 3;
+    configMock.getConfig = () => ({ ...oldGetConfig(), ai_translation_enabled: true,
+      ai_base_url: 'https://ai.example.test/v1', ai_model: 'synthetic-model' });
+    configMock.getSecrets = () => ({ ...oldGetSecrets(), ai_api_key: 'synthetic-private-ai-key' });
+    saveSettings = (cfg, secrets) => { committed = { cfg, secrets }; recordConfig(cfg); };
+    const loaded = await fetch(`${base}/api/config`, { headers: { Cookie: 'tw_sess=x' } });
+    const body = await loaded.json();
+    assert.equal(body.ai_translation_enabled, true);
+    assert.equal(body.ai_model, 'synthetic-model');
+    assert.equal(body.secrets.hasAiApiKey, true);
+    assert.doesNotMatch(JSON.stringify(body), /synthetic-private-ai-key|ai_api_key/);
+    const saved = await postAiSettings({ tg_chat_id: '-55', ai_api_key: '' });
+    assert.equal(saved.status, 200);
+    assert.equal(committed.cfg.ai_translation_enabled, true);
+    assert.equal(committed.cfg.ai_base_url, 'https://ai.example.test/v1');
+    assert.equal(committed.cfg.ai_model, 'synthetic-model');
+    assert.equal(committed.secrets.ai_api_key, 'synthetic-private-ai-key');
+    assert.doesNotMatch(await saved.text(), /synthetic-private-ai-key|ai_api_key/);
+  } finally { configMock.getConfig = oldGetConfig; configMock.getSecrets = oldGetSecrets; saveSettings = oldSave; }
+});
+
+test('malformed AI fields and incomplete enable requests cannot persist any settings', { concurrency: false }, async (t) => {
+  if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
+  persistedRevision = 3; configWrites = 0;
+  for (const patch of [
+    { ai_translation_enabled: 1 }, { clear_ai_api_key: 'true' }, { ai_model: null }, { ai_model: 'model\nheader' },
+    { ai_base_url: null }, { ai_base_url: 'http://ai.example.test/v1' },
+    { ai_base_url: 'https://user:pass@ai.example.test/v1' }, { ai_base_url: 'https://ai.example.test/v1?secret=x' },
+    { ai_base_url: 'https://ai.example.test/v1#fragment' }, { ai_api_key: 123 },
+    { ai_api_key: 'synthetic\nheader' }, { ai_api_key: 'synthetic\rheader' }, { ai_api_key: 'synthetic\0key' },
+    { ai_api_key: 'synthetic key' }, { ai_api_key: 'synthetic\tkey' },
+    { ai_api_key: 'x'.repeat(4097) }, { ai_translation_enabled: true },
+    { ai_translation_enabled: true, ai_model: 'synthetic-model' },
+    { ai_translation_enabled: true, ai_api_key: 'synthetic-key' },
+    { clear_ai_api_key: true, ai_api_key: 'synthetic-key' },
+  ]) {
+    const response = await postAiSettings(patch);
+    assert.equal(response.status, 400, Object.keys(patch).join(','));
+    assert.equal(configWrites, 0);
+    assert.doesNotMatch(await response.text(), /synthetic-key|synthetic\\nheader/);
+  }
+});
+
+test('AI endpoint changes require an explicit new key or disabled translation with key deletion', { concurrency: false }, async (t) => {
+  if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
+  const oldGetConfig = configMock.getConfig, oldGetSecrets = configMock.getSecrets, oldSave = saveSettings;
+  let committed;
+  try {
+    persistedRevision = 3;
+    configMock.getConfig = () => ({ ...oldGetConfig(), ai_translation_enabled: true,
+      ai_base_url: 'https://old.example.test/v1', ai_model: 'synthetic-model' });
+    configMock.getSecrets = () => ({ ...oldGetSecrets(), ai_api_key: 'synthetic-old-key' });
+    saveSettings = (cfg, secrets) => { committed = { cfg, secrets }; recordConfig(cfg); };
+    for (const patch of [
+      { ai_base_url: 'https://new.example.test/v1' },
+      { ai_base_url: 'https://new.example.test/v1', ai_translation_enabled: false },
+      { ai_base_url: 'https://new.example.test/v1', clear_ai_api_key: true },
+      { clear_ai_api_key: true },
+    ]) {
+      assert.equal((await postAiSettings(patch)).status, 400);
+      assert.equal(committed, undefined);
+    }
+    assert.equal((await postAiSettings({ ai_base_url: 'https://new.example.test/v1', ai_api_key: 'synthetic-new-key' })).status, 200);
+    assert.equal(committed.cfg.ai_base_url, 'https://new.example.test/v1');
+    assert.equal(committed.secrets.ai_api_key, 'synthetic-new-key');
+    assert.equal((await postAiSettings({ ai_base_url: 'https://third.example.test/v1', ai_translation_enabled: false,
+      clear_ai_api_key: true })).status, 200);
+    assert.equal(committed.cfg.ai_translation_enabled, false);
+    assert.equal(committed.secrets.ai_api_key, '');
+  } finally { configMock.getConfig = oldGetConfig; configMock.getSecrets = oldGetSecrets; saveSettings = oldSave; }
 });

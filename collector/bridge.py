@@ -299,7 +299,7 @@ class Bridge:
                 raise BridgeError("INVALID_REQUEST")
             if cursor is not None and (not isinstance(cursor, str) or not 1 <= len(cursor) <= 4096 or any(ord(c) < 32 for c in cursor)):
                 raise BridgeError("INVALID_REQUEST")
-            variables = {"userId": user_id, "count": count, "includePromotedContent": True, "withQuickPromoteEligibilityTweetFields": True, "withVoice": True, "withV2Timeline": True}
+            variables = {"userId": user_id, "count": count, "includePromotedContent": False, "withQuickPromoteEligibilityTweetFields": True, "withVoice": True, "withV2Timeline": True}
             if cursor is not None:
                 variables["cursor"] = cursor
             self.operations += 1

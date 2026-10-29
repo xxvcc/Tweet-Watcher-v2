@@ -93,3 +93,164 @@ test('storage writes only to DATA_DIR and detects replacement by production or p
     assert.equal(fs.existsSync(path.join(dir, 'outside.json')), false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('all state and evidence access rejects existing nonprivate directories without chmod', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-v2-private-'));
+  try {
+    const child = spawnSync(process.execPath, ['-e', `
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      const store = require('./lib/store');
+      const auth = require('./lib/auth');
+      const config = require('./lib/config');
+      const { createEvidenceStore } = require('./lib/evidence');
+      store.writeJSON('password.json', { hash: 'synthetic-password-record' });
+      const evidence = createEvidenceStore();
+      const before = fs.readFileSync(process.env.DATA_DIR + '/password.json');
+      for (const mode of [0o755, 0o770, 0o777]) {
+        fs.chmodSync(process.env.DATA_DIR, mode);
+        for (const access of [
+          () => auth.hasPassword(),
+          () => config.getConfig(),
+          () => config.getSecrets(),
+          () => store.readState('password.json'),
+          () => store.writeJSON('password.json', {}),
+          () => store.removeJSON('password.json'),
+          () => store.sweepTmp(),
+          () => evidence.persist({ runId: '11111111-1111-1111-1111-111111111111',
+            page: 0, username: 'alice', operation: 'user', data: {} }),
+        ]) assert.throws(access, /私有目录/);
+        assert.equal(fs.statSync(process.env.DATA_DIR).mode & 0o777, mode);
+        assert.deepEqual(fs.readFileSync(process.env.DATA_DIR + '/password.json'), before);
+        assert.deepEqual(fs.readdirSync(process.env.DATA_DIR), ['password.json']);
+      }
+      fs.chmodSync(process.env.DATA_DIR, 0o700);
+      assert.equal(auth.hasPassword(), true);
+      assert.equal(store.readState('password.json').status, 'ok');
+    `], { cwd: root, env: { ...process.env, DATA_DIR: dir }, encoding: 'utf8', timeout: 10000 });
+    assert.equal(child.status, 0, child.stderr);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a nonexistent isolated data directory is created privately without modifying its parent', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-v2-create-private-'));
+  const data = path.join(dir, 'new-data');
+  try {
+    const parentMode = fs.statSync(dir).mode & 0o777;
+    const child = spawnSync(process.execPath, ['-e', `
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      const store = require('./lib/store');
+      assert.equal(store.readState('synthetic.json').status, 'missing');
+      assert.equal(fs.existsSync(process.env.DATA_DIR), false);
+      store.writeJSON('synthetic.json', { synthetic: true });
+      assert.equal(fs.statSync(process.env.DATA_DIR).mode & 0o777, 0o700);
+      assert.equal(fs.statSync(process.env.DATA_DIR + '/synthetic.json').mode & 0o777, 0o600);
+      assert.equal(store.readState('synthetic.json').value.synthetic, true);
+    `], { cwd: root, env: { ...process.env, DATA_DIR: data }, encoding: 'utf8', timeout: 10000 });
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(fs.statSync(dir).mode & 0o777, parentMode);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('new nested directories cannot accept state or evidence before ancestor sync succeeds', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-v2-ancestor-sync-'));
+  try {
+    for (const kind of ['state', 'evidence']) {
+      const data = path.join(dir, kind, 'new-parent', 'new-data');
+      const child = spawnSync(process.execPath, ['-e', `
+        const assert = require('node:assert/strict');
+        const fs = require('node:fs');
+        const path = require('node:path');
+        const open = fs.openSync, fsync = fs.fsyncSync;
+        const opened = new Map(), synced = [];
+        const parent = path.dirname(process.env.DATA_DIR);
+        let failParent = true;
+        fs.openSync = (name, ...args) => {
+          const fd = open(name, ...args);
+          opened.set(fd, path.resolve(name));
+          return fd;
+        };
+        fs.fsyncSync = (fd) => {
+          const name = opened.get(fd);
+          if (failParent && name === parent) {
+            throw Object.assign(new Error('synthetic parent directory sync failure'), { code: 'EIO' });
+          }
+          fsync(fd);
+          synced.push(name);
+        };
+        function writer() {
+          if (${JSON.stringify(kind)} === 'state') {
+            const store = require('./lib/store');
+            return () => store.writeJSON('synthetic.json', { synthetic: true });
+          }
+          const evidence = require('./lib/evidence').createEvidenceStore();
+          return () => evidence.persist({ runId: '11111111-1111-1111-1111-111111111111',
+            page: 0, username: 'alice', operation: 'user', data: {} });
+        }
+        let write = writer();
+        assert.throws(write, { code: 'EIO' });
+        assert.equal(fs.statSync(parent).mode & 0o777, 0o700);
+        assert.equal(fs.statSync(process.env.DATA_DIR).mode & 0o777, 0o700);
+        assert.deepEqual(fs.readdirSync(process.env.DATA_DIR), []);
+        assert.throws(write, { code: 'EIO' });
+        assert.deepEqual(fs.readdirSync(process.env.DATA_DIR), []);
+        // A fresh module state sees the visible directory, but must still sync
+        // its ancestors before accepting any evidence or application record.
+        for (const module of ['./lib/store', './lib/evidence', './lib/data-directory']) {
+          delete require.cache[require.resolve(module)];
+        }
+        write = writer();
+        assert.throws(write, { code: 'EIO' });
+        assert.deepEqual(fs.readdirSync(process.env.DATA_DIR), []);
+        failParent = false;
+        write();
+        assert.equal(fs.readdirSync(process.env.DATA_DIR).length, 1);
+        for (let ancestor = process.env.DATA_DIR; ; ancestor = path.dirname(ancestor)) {
+          assert.ok(synced.includes(ancestor), 'ancestor was not synced: ' + ancestor);
+          if (path.dirname(ancestor) === ancestor) break;
+        }
+      `], { cwd: root, env: { ...process.env, DATA_DIR: data }, encoding: 'utf8', timeout: 10000 });
+      assert.equal(child.status, 0, kind + ': ' + child.stderr);
+    }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a non-root service can initialize private state under readable shared ancestors', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-v2-service-user-'));
+  let executableFd;
+  try {
+    // Copy only source helpers; no instance state or credentials are involved.
+    fs.mkdirSync(path.join(dir, 'lib'));
+    for (const name of ['store.js', 'data-directory.js']) {
+      fs.copyFileSync(path.join(root, 'lib', name), path.join(dir, 'lib', name));
+    }
+    const options = {};
+    let executable = process.execPath;
+    if (typeof process.getuid === 'function' && process.getuid() === 0) {
+      fs.chownSync(dir, 65534, 65534);
+      options.uid = options.gid = 65534;
+      // npx runtimes can live below /root. Execute this same Linux binary through
+      // an inherited descriptor so dropping privileges does not require access
+      // to the developer's private package cache.
+      executableFd = fs.openSync(process.execPath, 'r');
+      executable = '/proc/self/fd/3';
+      options.stdio = ['ignore', 'pipe', 'pipe', executableFd];
+    }
+    const child = spawnSync(executable, ['-e', `
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      assert.notEqual(process.getuid(), 0);
+      const store = require('./lib/store');
+      store.writeJSON('synthetic.json', { synthetic: true });
+      assert.equal(store.readState('synthetic.json').value.synthetic, true);
+      assert.equal(fs.statSync(process.env.DATA_DIR).mode & 0o777, 0o700);
+      assert.equal(fs.statSync(process.env.DATA_DIR + '/synthetic.json').mode & 0o777, 0o600);
+    `], { cwd: dir, env: { ...process.env, DATA_DIR: path.join(dir, 'new-parent', 'new-data') },
+      ...options, encoding: 'utf8', timeout: 10000 });
+    assert.equal(child.status, 0, child.error?.message || child.stderr);
+  } finally {
+    if (executableFd !== undefined) fs.closeSync(executableFd);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

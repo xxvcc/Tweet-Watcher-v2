@@ -26,6 +26,58 @@ const page = (entries = [], extra = [], cursor = 'next') => ({ data: { user: { r
 const parse = (data) => parseTimelinePage(data, identity);
 const rejects = (data, code = 'TIMELINE_INCOMPLETE') => assert.throws(() => parse(data), { code });
 
+test('valid optional X language survives parsing and missing duplicate metadata is enrichment', () => {
+  const english = tweet('200'); english.legacy.lang = 'EN';
+  assert.equal(parse(page([entry(english)])).tweets[0].lang, 'en');
+  for (const values of [[english, tweet('200')], [tweet('200'), english]]) {
+    assert.equal(parse(page(values.map(entry))).tweets[0].lang, 'en');
+  }
+  for (const lang of [undefined, null, 5, {}, 'en\ninvalid', 'x'.repeat(36)]) {
+    const value = tweet('200'); value.legacy.lang = lang;
+    assert.equal(Object.hasOwn(parse(page([entry(value)])).tweets[0], 'lang'), false);
+  }
+});
+
+test('non-English language metadata follows each displayed body including expanded reposts', () => {
+  for (const [lang, text] of [
+    ['JA', 'これは新しいモデルです。'], ['ru', 'Это новая модель.'],
+    ['ar', 'هذا نموذج جديد.'], ['fr', 'Bonjour le monde.'], ['zh-Hant', '這是新的模型。'],
+  ]) {
+    const value = tweet('200');
+    value.legacy.lang = lang;
+    value.legacy.full_text = text;
+    const parsed = parse(page([entry(value)])).tweets[0];
+    assert.equal(parsed.lang, lang.toLowerCase());
+    assert.equal(parsed.text, text);
+  }
+  const outer = tweet('300');
+  outer.legacy.full_text = 'RT @bob: preview…';
+  outer.legacy.lang = 'zh';
+  outer.legacy.retweeted_status_id_str = '200';
+  outer.retweeted_status_result = { result: { rest_id: '200',
+    legacy: { full_text: 'これは日本語の本文です。', lang: 'JA' } } };
+  const repost = parse(page([entry(outer)])).tweets[0];
+  assert.equal(repost.lang, 'ja');
+  assert.equal(repost.text, 'RT @bob: これは日本語の本文です。');
+  assert.equal(repost.id, '300');
+  assert.equal(repost.relations.repostId, '200');
+});
+
+test('expanded repost language always matches the displayed inner body', () => {
+  const outer = tweet('300'); outer.legacy.full_text = 'RT @bob: A short wrapper…'; outer.legacy.lang = 'fr';
+  outer.legacy.retweeted_status_id_str = '200';
+  const enriched = structuredClone(outer);
+  enriched.legacy.retweeted_status_result = { result: { rest_id: '200', legacy: { full_text: 'This is the complete English body.', lang: 'en' } } };
+  assert.equal(parse(page([entry(enriched)])).tweets[0].lang, 'en');
+  for (const values of [[outer, enriched], [enriched, outer]]) assert.equal(parse(page(values.map(entry))).tweets[0].lang, 'en');
+  delete enriched.legacy.retweeted_status_result.result.legacy.lang;
+  for (const values of [[enriched], [outer, enriched], [enriched, outer]]) {
+    const parsed = parse(page(values.map(entry))).tweets[0];
+    assert.equal(parsed.text, 'RT @bob: This is the complete English body.');
+    assert.equal(Object.hasOwn(parsed, 'lang'), false);
+  }
+});
+
 test('lookup verifies modern and legacy identity and refuses account ambiguity', () => {
   const lookup = (result) => ({ data: { user: { result } } });
   assert.deepEqual(parseUser(lookup(author()), 'ALICE'), { id: '10', username: 'alice', name: 'Alice' });
@@ -73,6 +125,30 @@ test('normal occurrence overrides duplicate pin context without losing boundarie
     assert.equal(result.tweets[0].is_pinned, false);
     assert.deepEqual(result.boundaryIds, ['200']);
   }
+});
+
+test('duplicate pins and ordinary rows merge omitted profiles and retain the known display name in either order', () => {
+  for (const pinFirst of [true, false]) {
+    for (const pinHasProfile of [true, false]) {
+      const pin = tweet('200'), ordinary = tweet('200');
+      delete (pinHasProfile ? ordinary : pin).core;
+      const fixture = page([entry(ordinary)], [{ type: 'TimelinePinEntry', entry: entry(pin) }]);
+      if (pinFirst) fixture.data.user.result.timeline.timeline.instructions.reverse();
+      const result = parse(fixture);
+      assert.equal(result.tweets.length, 1);
+      assert.equal(result.tweets[0].name, 'Alice');
+      assert.equal(result.tweets[0].is_pinned, false);
+      assert.deepEqual(result.boundaryIds, ['200']);
+    }
+  }
+  const renamed = tweet('200'); renamed.core.user_results.result.core.name = 'Alice Renamed';
+  assert.equal(parse(page([entry(tweet('200')), entry(renamed)])).tweets[0].name, 'Alice Renamed');
+  const changed = tweet('200'); delete changed.core; changed.legacy.full_text = 'Changed body';
+  rejects(page([entry(tweet('200')), entry(changed)]), 'TWEET_CONFLICT');
+  const foreign = tweet('200'); foreign.core.user_results.result = author('20', 'bob'); foreign.legacy.user_id_str = '20';
+  const conflictingAuthor = structuredClone(foreign);
+  conflictingAuthor.core.user_results.result.rest_id = '21'; conflictingAuthor.legacy.user_id_str = '21';
+  rejects(page([entry(foreign), entry(conflictingAuthor)]), 'TWEET_CONFLICT');
 });
 
 test('same-ID content changes are explicit conflicts instead of silent deduplication', () => {
@@ -213,6 +289,103 @@ test('embedded quote does not suppress the same post when it is an independent e
   assert.deepEqual(parse(page([entry(repost), entry(tweet('100'))])).tweets.map((value) => value.id), ['300', '100']);
 });
 
+test('truncated reposts recover complete legacy or note text without changing outer identity or relationships', () => {
+  for (const note of [false, true]) {
+    const outer = tweet('300'); outer.legacy.full_text = 'RT @bob: Full…';
+    outer.legacy.truncated = true;
+    outer.legacy.in_reply_to_status_id_str = '290';
+    const original = tweet('200'); original.legacy.user_id_str = '20';
+    original.core.user_results.result = author('20', 'bob');
+    original.legacy.full_text = note ? 'Short preview…' : 'Full original &amp; uncut';
+    if (note) {
+      original.legacy.truncated = true;
+      original.note_tweet = { note_tweet_results: { result: { text: 'Full original &amp; ' + '字'.repeat(20000) } } };
+    }
+    outer.legacy.retweeted_status_result = { result: { __typename: 'TweetWithVisibilityResults', tweet: original } };
+    const result = parse(page([entry(outer)])).tweets[0];
+    assert.equal(result.text, 'RT @bob: Full original & ' + (note ? '字'.repeat(20000) : 'uncut'));
+    assert.equal(result.id, '300');
+    assert.equal(result.author_username, 'alice');
+    assert.equal(result.url, 'https://x.com/alice/status/300');
+    assert.equal(result.time, outer.legacy.created_at);
+    assert.equal(result.is_rt, true);
+    assert.equal(result.relations.repostId, '200');
+    assert.equal(result.relations.replyToId, '290');
+  }
+});
+
+test('unavailable or incomplete referenced bodies preserve the parent and its known repost identity', () => {
+  for (const nested of [
+    { __typename: 'TweetTombstone' },
+    { rest_id: '200' },
+    { rest_id: '200', legacy: { full_text: 'Preview…', truncated: true } },
+    { rest_id: '200', legacy: { full_text: 'Preview…' }, note_tweet: {} },
+    { rest_id: '200', legacy: { full_text: 'Untrusted author' }, core: { user_results: { result: author('20', 'charlie') } } },
+  ]) {
+    const outer = tweet('300'); outer.legacy.full_text = 'RT @bob: Parent preview…';
+    outer.legacy.retweeted_status_id_str = '200';
+    outer.legacy.retweeted_status_result = { result: nested };
+    const result = parse(page([entry(outer)])).tweets[0];
+    assert.equal(result.text, outer.legacy.full_text);
+    assert.equal(result.relations.repostId, '200');
+    outer.legacy.truncated = true;
+    rejects(page([entry(outer)]));
+  }
+  const outer = tweet('300'); outer.legacy.full_text = 'RT @bob: Parent preview…';
+  outer.legacy.retweeted_status_result = { result: { rest_id: '200', legacy: { full_text: 'Full without repeated author profile' } } };
+  assert.equal(parse(page([entry(outer)])).tweets[0].text, 'RT @bob: Full without repeated author profile');
+});
+
+test('duplicate reposts merge optional body enrichment but reject changed known body or identity', () => {
+  const outer = tweet('300'); outer.legacy.full_text = 'RT @bob: Preview…';
+  outer.legacy.retweeted_status_id_str = '200';
+  const enriched = structuredClone(outer);
+  enriched.legacy.retweeted_status_result = { result: { rest_id: '200', legacy: { full_text: 'Complete original' } } };
+  for (const records of [[outer, enriched], [enriched, outer]]) {
+    assert.equal(parse(page(records.map(entry))).tweets[0].text, 'RT @bob: Complete original');
+  }
+  const changed = structuredClone(enriched);
+  changed.legacy.retweeted_status_result.result.legacy.full_text = 'Changed original';
+  rejects(page([entry(enriched), entry(changed)]), 'TWEET_CONFLICT');
+  const conflicting = structuredClone(enriched);
+  conflicting.legacy.retweeted_status_result.result.legacy.id_str = '201';
+  rejects(page([entry(conflicting)]));
+});
+
+test('recovered long repost text survives queue serialization and reload before Telegram display truncation', () => {
+  const { createOutbox } = require('../lib/outbox');
+  const { formatTweet } = require('../lib/telegram');
+  const files = new Map();
+  const store = {
+    readState(name) { return files.has(name) ? { status: 'ok', value: JSON.parse(files.get(name)) } : { status: 'missing' }; },
+    writeJSON(name, value) { files.set(name, JSON.stringify(value)); },
+  };
+  const outer = tweet('300'); outer.legacy.full_text = 'RT @bob: Preview…';
+  const fullText = 'RT @bob: ' + '字'.repeat(20000) + 'END_MARKER';
+  outer.legacy.retweeted_status_result = { result: { rest_id: '200', legacy: {},
+    note_tweet: { note_tweet_results: { result: { text: fullText.slice('RT @bob: '.length) } } } } };
+  const box = createOutbox(store, 200);
+  box.flush(); box.baseline('alice', ['100']);
+  box.capture('alice', parse(page([entry(outer)])).tweets, 'a'.repeat(64), null);
+  const restored = createOutbox(store, 200).get('alice').pending[0];
+  assert.equal(restored.text, fullText);
+  assert.equal(restored.relations.repostId, '200');
+  assert.equal(restored.id, '300');
+  const formatted = formatTweet(restored, 'alice');
+  assert.ok(formatted.length <= 4096);
+  assert.match(formatted, /RT @bob: 字/);
+  assert.match(formatted, /内容已截断/);
+});
+
+test('unexpected promoted entries still reject the entire page without using an advertising boundary', () => {
+  for (const level of ['entry', 'content', 'item']) {
+    const ad = entry(tweet('200'));
+    const target = level === 'entry' ? ad : level === 'content' ? ad.content : ad.content.itemContent;
+    target.promotedMetadata = { advertiserId: '10' };
+    rejects(page([entry(tweet('300')), ad]));
+  }
+});
+
 test('deleted quote retains explicit link and malformed or conflicting relationship identity fails', () => {
   const value = tweet(); value.legacy.quoted_status_id_str = '100';
   value.quoted_status_result = { result: { __typename: 'TweetTombstone' } };
@@ -241,6 +414,29 @@ test('long tweets, explicit empty media text and escaped text are preserved with
     (bad) => { bad.note_tweet = { note_tweet_results: { result: {} } }; },
     (bad) => { bad.legacy.full_text = 'x'.repeat(100001); },
   ]) { const bad = tweet(); mutate(bad); rejects(page([entry(bad)])); }
+});
+
+test('explicitly truncated ordinary and quote bodies require a complete note before establishing coverage', () => {
+  for (const quoted of [false, true]) {
+    const value = tweet('200'); value.legacy.full_text = 'Only a preview…'; value.legacy.truncated = true;
+    if (quoted) {
+      value.legacy.is_quote_status = true;
+      value.legacy.quoted_status_id_str = '100';
+      value.quoted_status_result = { result: { __typename: 'TweetTombstone' } };
+    }
+    for (const note of [undefined, null, {}, { note_tweet_results: { result: {} } }]) {
+      value.note_tweet = note;
+      rejects(page([entry(value), entry(tweet('100'))]));
+    }
+    value.note_tweet = { note_tweet_results: { result: { text: 'Complete body &amp; ending.' } } };
+    const recovered = parse(page([entry(value), entry(tweet('100'))]));
+    assert.equal(recovered.tweets[0].text, 'Complete body & ending.');
+    assert.deepEqual(recovered.boundaryIds, ['200', '100']);
+    assert.equal(recovered.tweets[0].relations.quoteId, quoted ? '100' : null);
+  }
+  const complete = tweet('200'); complete.legacy.full_text = 'Intentional ending…';
+  assert.equal(parse(page([entry(complete)])).tweets[0].text, complete.legacy.full_text,
+    'punctuation alone is not proof of truncation');
 });
 
 test('any malformed record rejects the entire otherwise valid page without returning partial tweets', () => {

@@ -37,6 +37,55 @@ test('message truncation does not leave a dangling surrogate', () => {
   assert.match(out, /内容已截断/);
 });
 
+test('translation formatting preserves original-only messages and includes both complete short texts', () => {
+  const tweet = { text: 'Hello, world!', url: 'https://x.com/alice/status/1' };
+  const original = '🐦 新推文 @alice\n\n发布时间：\nX链接：https://x.com/alice/status/1\n内容：\nHello, world!';
+  for (const translation of [undefined, '', '   ']) {
+    assert.equal(telegram.formatTweet(tweet, 'alice', translation), original);
+  }
+  const bilingual = telegram.formatTweet(tweet, 'alice', '你好，世界！');
+  assert.ok(bilingual.includes('X链接：https://x.com/alice/status/1'));
+  assert.ok(bilingual.endsWith('\n\nAI 中文翻译：\n你好，世界！\n\n原文：\nHello, world!'));
+  assert.equal(tweet.text, 'Hello, world!');
+});
+
+test('long bilingual messages reserve space for both texts without cutting emoji or exceeding Telegram limits', () => {
+  for (const metadata of [
+    { time: '', url: 'https://x.com/alice/status/1' },
+    { time: 'x'.repeat(256), url: 'https://example.com/' + 'x'.repeat(2028) },
+  ]) {
+    const text = 'Original English 😀 '.repeat(5000);
+    const translation = '中文翻译😀'.repeat(5000);
+    const message = telegram.formatTweet({ text, ...metadata }, 'alice', translation);
+    assert.ok(message.length <= 4096);
+    assert.equal(message.isWellFormed(), true);
+    assert.ok(message.includes(metadata.url), 'valid complete link remains visible');
+    const translatedBody = message.split('\n\nAI 中文翻译：\n')[1].split('\n\n原文：\n')[0];
+    const originalBody = message.split('\n\n原文：\n')[1];
+    assert.ok(translatedBody.startsWith('中文翻译😀'));
+    assert.ok(originalBody.startsWith('Original English 😀 '));
+    assert.match(translatedBody, /内容已截断/);
+    assert.match(originalBody, /内容已截断/);
+    assert.ok(translatedBody.length > originalBody.length);
+  }
+});
+
+test('short original or translation releases its unused message space to the longer section', () => {
+  const longText = 'English 😀 '.repeat(1000);
+  const longTranslation = '中文😀'.repeat(1000);
+  const shortOriginal = telegram.formatTweet({ text: 'Hello!' }, 'alice', longTranslation);
+  assert.ok(shortOriginal.length <= 4096);
+  assert.equal(shortOriginal.isWellFormed(), true);
+  assert.ok(shortOriginal.endsWith('\n\n原文：\nHello!'));
+  assert.ok(shortOriginal.split('\n\nAI 中文翻译：\n')[1].split('\n\n原文：\n')[0].length > 3500);
+
+  const shortTranslation = telegram.formatTweet({ text: longText }, 'alice', '你好！');
+  assert.ok(shortTranslation.length <= 4096);
+  assert.equal(shortTranslation.isWellFormed(), true);
+  assert.ok(shortTranslation.includes('\n\nAI 中文翻译：\n你好！\n\n原文：\n'));
+  assert.ok(shortTranslation.split('\n\n原文：\n')[1].length > 3500);
+});
+
 test('HTTP Retry-After survives a non-JSON Telegram 429 response', async () => {
   const originalFetch = global.fetch;
   try {

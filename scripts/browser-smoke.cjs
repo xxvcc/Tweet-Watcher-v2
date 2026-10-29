@@ -97,25 +97,46 @@ async function main() {
       }
     }, token);
   }
+  async function openSettledSettings() {
+    await page.locator('#btn-settings').click();
+    await page.locator('.drawer').evaluate(async (drawer) => {
+      // Visibility alone does not mean the slide-in transform/opacity reached
+      // its final state. Wait before both layout assertions and screenshots.
+      await Promise.all(drawer.getAnimations().map((animation) => animation.finished));
+    });
+  }
   await omitSetupNonce();
-  await page.screenshot({ path: path.join(artifacts, 'desktop-panel.png'), fullPage: true });
+  await page.screenshot({ path: path.join(artifacts, 'desktop-panel.png'), fullPage: true, animations: 'disabled' });
 
-  await page.locator('#btn-settings').click();
+  await openSettledSettings();
   assert.equal(await page.locator('#collector-name').textContent(), 'twscrape');
   assert.equal(await page.locator('#btn-test-collector').isEnabled(), true);
   await page.locator('#btn-add-acct').click();
   await page.locator('[data-role=name]').fill('synthetic_demo');
   await page.locator('[data-role=fc]').fill('20');
   await page.locator('[data-role=iv]').fill('300');
+  assert.equal(await page.locator('#ai_translation_enabled').isChecked(), false);
+  await page.locator('#ai_translation_enabled').check();
+  await page.locator('#ai_base_url').fill('https://synthetic.example.test/v1');
+  await page.locator('#ai_model').fill('synthetic-model');
+  await page.locator('#ai_api_key').fill('synthetic-browser-key');
+  assert.equal(await page.locator('#ai_api_key').getAttribute('type'), 'password');
   await page.locator('#btn-save').click();
   await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('配置已保存'));
+  assert.equal(await page.locator('#ai_api_key').inputValue(), '');
+  assert.equal(await page.locator('#ai_api_key').getAttribute('placeholder'), '••••••••••••');
+  assert.equal(await page.locator('#ai_translation_enabled').isChecked(), true);
+  assert.equal(await page.locator('#ai_model').inputValue(), 'synthetic-model');
+  const aiSettings = await page.evaluate(async () => (await fetch('api/config')).json());
+  assert.equal(aiSettings.secrets.hasAiApiKey, true);
+  assert.equal(JSON.stringify(aiSettings).includes('synthetic-browser-key'), false);
   const detection = page.waitForResponse((response) => response.url().endsWith('/api/detect-collector'));
   await page.locator('#btn-detect-collector').click();
   assert.equal((await detection).status(), 200);
   await page.waitForFunction(() => !document.querySelector('#btn-detect-collector').disabled);
   await page.locator('#toast').waitFor({ state: 'hidden', timeout: 10000 });
   await omitSetupNonce();
-  await page.screenshot({ path: path.join(artifacts, 'desktop-settings.png'), fullPage: true });
+  await page.screenshot({ path: path.join(artifacts, 'desktop-settings.png'), fullPage: true, animations: 'disabled' });
   await page.locator('#settings-close').click();
   assert.equal(await page.locator('#stat-accounts').textContent(), '1');
 
@@ -124,13 +145,13 @@ async function main() {
     await page.waitForTimeout(100);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true,
       `panel overflows ${viewport.width}px viewport`);
-    await page.screenshot({ path: path.join(artifacts, `mobile-${viewport.width}-panel.png`), fullPage: true });
-    await page.locator('#btn-settings').click();
+    await page.screenshot({ path: path.join(artifacts, `mobile-${viewport.width}-panel.png`), fullPage: true, animations: 'disabled' });
+    await openSettledSettings();
     assert.equal(await page.evaluate(() => {
       const drawer = document.querySelector('.drawer');
       return drawer.scrollWidth <= drawer.clientWidth && document.documentElement.scrollWidth <= innerWidth;
     }), true, `settings overflow ${viewport.width}px viewport`);
-    await page.screenshot({ path: path.join(artifacts, `mobile-${viewport.width}-settings.png`), fullPage: true });
+    await page.screenshot({ path: path.join(artifacts, `mobile-${viewport.width}-settings.png`), fullPage: false, animations: 'disabled' });
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#settings').isVisible(), false);
   }
@@ -140,12 +161,15 @@ async function main() {
   await page.locator('#auth-submit').click();
   await page.locator('#dash').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#stat-accounts').textContent(), '1');
+  assert.equal(await page.locator('#ai_translation_enabled').isChecked(), true);
+  assert.equal(await page.locator('#ai_model').inputValue(), 'synthetic-model');
+  assert.equal(await page.locator('#ai_api_key').inputValue(), '');
   assert.deepEqual(errors, []);
   assert.deepEqual(forbidden, []);
   assert.equal(requests.some((url) => url.startsWith('/api/test/')), false);
   console.log(JSON.stringify({ ok: true, desktop: '1440x1000', mobile: ['390x844', '320x740'],
     streamMode: disableSse ? 'http-polling' : 'sse',
-    checks: ['setup', 'login', 'logout', 'config-save', 'collector-detection', 'read-only-policy', 'responsive-layout'],
+    checks: ['setup', 'login', 'logout', 'config-save', 'ai-settings-save-reload', 'ai-key-redaction', 'collector-detection', 'read-only-policy', 'responsive-layout'],
     clientErrors: errors.length, externalRequests: forbidden.length, artifacts }));
 }
 

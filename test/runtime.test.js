@@ -28,6 +28,7 @@ test('default development policy stays disabled even under NODE_ENV=production',
   assert.equal(runtime.status().collector, 'twscrape');
   assert.equal(runtime.status().collectionEnabled, false);
   assert.equal(runtime.status().deliveryEnabled, false);
+  assert.equal(runtime.status().translationEnabled, false);
   const child = run("console.log(JSON.stringify(require('./lib/runtime').status()))", { NODE_ENV: 'production' });
   assert.equal(child.status, 0, child.stderr);
   assert.equal(JSON.parse(child.stdout).collectionEnabled, false);
@@ -41,6 +42,7 @@ test('runtime mode requires an explicit collection and delivery policy', () => {
     assert.equal(policy.collector, 'twscrape');
     assert.equal(policy.collectionEnabled, true);
     assert.equal(policy.deliveryEnabled, sends);
+    assert.equal(policy.translationEnabled, sends);
     assert.equal(policy.schedulingEnabled, sends);
   }
   for (const mode of ['legacy-live', 'production', 'twscrape', 'DEVELOPMENT', 'readonly']) {
@@ -62,7 +64,12 @@ test('twscrape and Telegram refuse valid synthetic requests before any external 
     authToken: 'FAKE_AUTH', ct0: 'FAKE_CSRF',
   });
   const sent = await telegram.sendMessage({ botToken: '1:FAKE_BOT', chatId: '1', text: 'synthetic' });
-  for (const result of [fetched, sent]) {
+  const translated = await require('../lib/translation').translateTweet(
+    { text: 'This is a synthetic English post.', lang: 'en' },
+    { ai_translation_enabled: true, ai_base_url: 'https://example.test/v1', ai_model: 'synthetic' },
+    { ai_api_key: 'FAKE_AI_KEY' },
+  );
+  for (const result of [fetched, sent, translated]) {
     assert.equal(result.ok, false);
     assert.equal(result.disabled, true);
     assert.equal(result.code, 'RUNTIME_DISABLED');
@@ -137,6 +144,12 @@ test('read-only blocks Telegram and scheduling before network, subprocess or con
     (async () => {
       const telegram = await require('./lib/telegram').sendMessage({ botToken: '1:FAKE', chatId: '1', text: 'test' });
       assert.equal(telegram.code, 'RUNTIME_DISABLED');
+      const translated = await require('./lib/translation').translateTweet(
+        { text: 'This is a synthetic English post.', lang: 'en' },
+        { ai_translation_enabled: true, ai_base_url: 'https://example.test/v1', ai_model: 'synthetic' },
+        { ai_api_key: 'FAKE_AI_KEY' },
+      );
+      assert.equal(translated.code, 'RUNTIME_DISABLED');
       const worker = require('./lib/worker');
       worker.start();
       await worker.tick();

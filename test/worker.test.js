@@ -22,7 +22,7 @@ function makeState() {
   };
 }
 
-function loadWorker({ config, twscrape, telegram, state = makeState(), baselineIds, storedDelivery, secrets, writeError, files: sharedFiles, mode = 'live' }) {
+function loadWorker({ config, twscrape, telegram, translation = { async translateTweet() { throw new Error('unexpected translation'); } }, state = makeState(), baselineIds, storedDelivery, secrets, writeError, files: sharedFiles, mode = 'live' }) {
   const paths = {
     worker: require.resolve('../lib/worker'),
     store: require.resolve('../lib/store'),
@@ -31,6 +31,7 @@ function loadWorker({ config, twscrape, telegram, state = makeState(), baselineI
     telegram: require.resolve('../lib/telegram'),
     state: require.resolve('../lib/state'),
     runtime: require.resolve('../lib/runtime'),
+    translation: require.resolve('../lib/translation'),
   };
   const writes = [];
   const files = sharedFiles || new Map();
@@ -63,6 +64,7 @@ function loadWorker({ config, twscrape, telegram, state = makeState(), baselineI
   });
   put(paths.twscrape, twscrape);
   put(paths.telegram, telegram);
+  put(paths.translation, translation);
   put(paths.state, state);
   put(paths.runtime, {
     blocked: (operation) => mode === 'read-only' && operation !== 'collection'
@@ -109,6 +111,116 @@ const noSendTelegram = {
   formatTweet: (tweet) => tweet.id,
   sendMessage: async () => { throw new Error('sendMessage should not be called'); },
 };
+
+test('translation runs after durable capture and is reused across Telegram retries without altering original evidence', async (t) => {
+  t.mock.method(global, 'setTimeout', (fn) => { queueMicrotask(fn); return 0; });
+  const original = { id: '2', text: 'This is the original English post.', lang: 'en',
+    relations: { quoteId: '100', replyToId: '99', repostId: null, editIds: ['2', '3'] } };
+  let translations = 0;
+  const sent = [];
+  const harness = loadWorker({
+    config: { tg_chat_id: '1', paused: false, accounts: [account('alice')], ai_translation_enabled: true },
+    baselineIds: { alice: ['1'] },
+    twscrape: { async fetchTweets() { return completeTimeline([original], '2'); } },
+    translation: {
+      async translateTweet(tweet) {
+        translations++;
+        const saved = harness.files.get('delivery_state.json').accounts.alice;
+        assert.equal(saved.pending[0].text, original.text);
+        assert.deepEqual(saved.pending[0].relations, original.relations);
+        assert.equal(saved.acquisitionWatermark, '2');
+        assert.equal(tweet.text, original.text);
+        return { ok: true, text: '这是原始英文推文。' };
+      },
+    },
+    telegram: {
+      formatTweet: (tweet, user, translated) => `${user}: ${tweet.text}\n${translated}`,
+      async sendMessage({ text }) { sent.push(text); return { ok: sent.length === 2 }; },
+    },
+  });
+  try {
+    await harness.worker.tick();
+    assert.equal(translations, 1);
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0], sent[1]);
+    assert.match(sent[0], /这是原始英文推文/);
+    const saved = harness.files.get('delivery_state.json').accounts.alice;
+    assert.deepEqual(saved.pending, []);
+    assert.ok(saved.sent.includes('2'));
+    assert.equal(original.text, 'This is the original English post.');
+  } finally { harness.restore(); }
+});
+
+test('translation failures and unexpected exceptions fall back to original delivery without leaking provider diagnostics', async (t) => {
+  t.mock.method(global, 'setTimeout', (fn) => { queueMicrotask(fn); return 0; });
+  for (const failure of ['response', 'exception']) {
+    const sensitive = 'SYNTHETIC_AI_SECRET_MUST_NOT_APPEAR';
+    const sent = [];
+    const harness = loadWorker({
+      config: { tg_chat_id: '1', paused: false, accounts: [account('alice')], ai_translation_enabled: true },
+      secrets: { auth_token: 'auth', ct0: 'ct0x', tg_bot_token: 'bot', ai_api_key: sensitive },
+      baselineIds: { alice: ['1'] },
+      twscrape: { async fetchTweets() { return completeTimeline([{ id: '2', text: 'Original post' }], '2'); } },
+      translation: { async translateTweet() {
+        if (failure === 'exception') throw new Error(sensitive);
+        return { ok: false, message: sensitive, code: 'AI_TIMEOUT' };
+      } },
+      telegram: {
+        formatTweet: (tweet, user, translated) => { assert.equal(translated, ''); return tweet.text; },
+        async sendMessage({ text }) { sent.push(text); return { ok: true }; },
+      },
+    });
+    try {
+      await harness.worker.tick();
+      assert.deepEqual(sent, ['Original post']);
+      assert.equal(harness.files.get('delivery_state.json').accounts.alice.pending.length, 0);
+      assert.match(harness.state.logs.join('\n'), /AI 翻译未完成/);
+      assert.ok(!harness.state.logs.join('\n').includes(sensitive));
+    } finally { harness.restore(); }
+  }
+});
+
+test('pause or config changes while translation is pending preserve the queue and cancel the old delivery', async () => {
+  for (const change of ['pause', 'config']) {
+    let release;
+    let started;
+    const ready = new Promise((resolve) => { started = resolve; });
+    const pending = new Promise((resolve) => { release = resolve; });
+    const harness = loadWorker({
+      config: { tg_chat_id: '1', paused: false, accounts: [account('alice')], ai_translation_enabled: true },
+      baselineIds: { alice: ['1'] },
+      twscrape: { async fetchTweets() { return completeTimeline([{ id: '2', text: 'Original post' }], '2'); } },
+      translation: { async translateTweet() { started(); await pending; return { ok: true, text: '中文译文' }; } },
+      telegram: noSendTelegram,
+    });
+    try {
+      const tick = harness.worker.tick();
+      await ready;
+      if (change === 'pause') harness.worker.setPaused(true);
+      else harness.worker.configChanged();
+      release();
+      await tick;
+      const saved = harness.files.get('delivery_state.json').accounts.alice;
+      assert.equal(saved.pending[0].id, '2');
+      assert.ok(!saved.sent.includes('2'));
+    } finally { release(); harness.restore(); }
+  }
+});
+
+test('disabled translation makes no AI call while delivering a new tweet', async (t) => {
+  t.mock.method(global, 'setTimeout', (fn) => { queueMicrotask(fn); return 0; });
+  let calls = 0;
+  let sends = 0;
+  const harness = loadWorker({
+    config: { tg_chat_id: '1', paused: false, accounts: [account('alice')], ai_translation_enabled: false },
+    baselineIds: { alice: ['1'] },
+    twscrape: { async fetchTweets() { return completeTimeline([{ id: '2', text: 'Original post' }], '2'); } },
+    translation: { async translateTweet() { calls++; return { ok: true, text: '中文' }; } },
+    telegram: { formatTweet: (tweet) => tweet.text, async sendMessage() { sends++; return { ok: true }; } },
+  });
+  try { await harness.worker.tick(); assert.equal(calls, 0); assert.equal(sends, 1); }
+  finally { harness.restore(); }
+});
 
 test('queued accounts skipped by pause remain immediately due after resume', { concurrency: false }, async () => {
   const config = {

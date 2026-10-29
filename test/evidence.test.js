@@ -55,7 +55,7 @@ test('bounded retention evicts old rounds and never follows evidence symlinks', 
 test('public directories and excessive raw pages fail closed', (t) => {
   const { directory, store } = fixture(t);
   fs.chmodSync(directory, 0o755);
-  assert.throws(() => store.persist(record()), /private/);
+  assert.throws(() => store.persist(record()), /私有目录/);
   fs.chmodSync(directory, 0o700);
   assert.throws(() => store.persist(record({ data: { text: 'x'.repeat(8 * 1024 * 1024) } })), /too large/);
   assert.equal(fs.readdirSync(directory).length, 0);

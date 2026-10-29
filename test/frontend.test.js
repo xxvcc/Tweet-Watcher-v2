@@ -25,13 +25,14 @@ class ClassList {
 function matchesSimple(el, selector) {
   selector = selector.trim();
   if (!selector || !el || el.nodeType !== 1) return false;
-  const attr = selector.match(/\[([\w-]+)(?:="([^"]*)")?\]$/);
+  const attr = selector.match(/\[([\w-]+)(?:=(?:"([^"]*)"|([^\]]+)))?\]$/);
   if (attr) {
     selector = selector.slice(0, attr.index);
     const actual = attr[1].startsWith('data-')
       ? el.dataset[attr[1].slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())]
       : el.attributes[attr[1]];
-    if (attr[2] === undefined ? actual === undefined : String(actual) !== attr[2]) return false;
+    const expected = attr[2] ?? attr[3];
+    if (expected === undefined ? actual === undefined : String(actual) !== expected) return false;
   }
   if (!selector) return true;
   if (selector[0] === '#') return el.id === selector.slice(1);
@@ -66,6 +67,7 @@ class FakeNode {
     this.value = '';
     this.placeholder = '';
     this.disabled = false;
+    this.checked = false;
     this.type = tagName === 'input' ? 'text' : '';
     this._className = classes;
     this.classList = new ClassList(this, classes);
@@ -164,8 +166,11 @@ function buildDocument() {
   const settings = add(body, 'settings', 'div', 'hidden');
   add(settings, 'settings-close', 'button'); add(settings, 'acct-list'); add(settings, 'btn-add-acct', 'button');
   for (const id of ['auth_token', 'ct0', 'tg_bot_token']) add(settings, id, 'input', 'secret');
+  for (const id of ['ai_translation_enabled', 'ai_base_url', 'ai_model', 'ai_api_key', 'clear_ai_api_key']) add(settings, id, 'input');
+  ids.get('ai_api_key').type = 'password';
   add(settings, 'tg_chat_id', 'input'); add(settings, 'collector-name'); add(settings, 'collector-hint');
-  ['btn-detect-collector', 'btn-save', 'btn-test-collector', 'btn-test-tg', 'pw-toggle'].forEach((id) => add(settings, id, 'button'));
+  ['btn-detect-collector', 'btn-save', 'btn-test-collector', 'btn-test-tg', 'btn-test-ai', 'pw-toggle'].forEach((id) => add(settings, id, 'button'));
+  add(settings, 'ai-test-result', 'div', 'ai-test-result hidden');
   const pwForm = add(settings, 'pw-form', 'div', 'hidden');
   ['old_pw', 'new_pw', 'new_pw2'].forEach((id) => { const input = add(pwForm, id, 'input'); input.type = 'password'; });
   add(pwForm, 'btn-chpw', 'button');
@@ -192,6 +197,14 @@ async function loadApp(handler, options = {}) {
     close() { this.readyState = FakeEventSource.CLOSED; }
   }
   const timers = new Map(), timerDelays = new Map(); let timerId = 0;
+  const clock = {
+    wall: Date.UTC(2026, 9, 24), monotonic: 0,
+    advance(ms) { this.wall += ms; this.monotonic += ms; },
+  };
+  class BrowserDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [clock.wall])); }
+    static now() { return clock.wall; }
+  }
   const location = { reloads: 0, reload() { this.reloads++; } };
   const EventSourceImpl = options.EventSource || FakeEventSource;
   const context = {
@@ -199,6 +212,8 @@ async function loadApp(handler, options = {}) {
     location,
     EventSource: EventSourceImpl,
     AbortController,
+    Date: BrowserDate,
+    performance: options.withoutPerformance ? undefined : { now: () => clock.monotonic },
     localStorage: { getItem() { return null; }, setItem() {} },
     getComputedStyle: () => ({ getPropertyValue: () => 'disc', webkitTextSecurity: 'disc' }),
     setTimeout(fn, delay) { const id = ++timerId; timers.set(id, fn); timerDelays.set(id, delay); return id; },
@@ -213,17 +228,18 @@ async function loadApp(handler, options = {}) {
   context.window = context;
   vm.runInNewContext(APP_SOURCE, context, { filename: 'public/app.js' });
   await settle();
-  return { context, document, ids, requests, EventSource: EventSourceImpl, timers, timerDelays };
+  return { context, document, ids, requests, EventSource: EventSourceImpl, timers, timerDelays, clock };
 }
 
 const baseConfig = (revision = 10, overrides = {}) => ({
   tg_chat_id: '', accounts: [], collector: { name: 'twscrape', fixed: true },
+  ai_translation_enabled: false, ai_base_url: 'https://api.openai.com/v1', ai_model: '',
   configRevision: revision,
-  secrets: { hasAuthToken: true, hasCt0: true, hasTgBotToken: true },
+  secrets: { hasAuthToken: true, hasCt0: true, hasTgBotToken: true, hasAiApiKey: false },
   ...overrides,
 });
 
-test('runtime policy stays visible and disables collection and delivery controls', async () => {
+test('restricted runtime policy stays visible and disables collection and delivery controls', async () => {
   const app = await loadApp(async (url) => {
     if (url === 'api/session') return response({ hasPassword: true, authed: true });
     if (url === 'api/config') return response(baseConfig());
@@ -236,15 +252,20 @@ test('runtime policy stays visible and disables collection and delivery controls
   }) });
   assert.equal(app.ids.get('live-text').textContent, '开发预览');
   assert.match(app.ids.get('runtime-notice').textContent, /采集.*发送已关闭/);
+  assert.equal(app.ids.get('runtime-notice').classList.contains('hidden'), false);
   assert.equal(app.ids.get('btn-test-collector').disabled, true);
   assert.equal(app.ids.get('btn-test-tg').disabled, true);
   assert.equal(app.ids.get('btn-pause').classList.contains('hidden'), true);
   assert.equal(app.ids.get('btn-resume').classList.contains('hidden'), true);
+  await app.ids.get('btn-test-collector').onclick();
+  await app.ids.get('btn-test-tg').onclick();
+  assert.equal(app.requests.some((request) => request.url.startsWith('api/test/')), false);
   stream.listeners.status({ data: JSON.stringify({
     running: false, paused: false, accounts: {},
     runtime: { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false },
   }) });
   assert.match(app.ids.get('runtime-notice').textContent, /只读验证.*自动监控.*发送已关闭/);
+  assert.equal(app.ids.get('runtime-notice').classList.contains('hidden'), false);
   assert.equal(app.ids.get('btn-test-collector').disabled, false);
   assert.equal(app.ids.get('btn-test-tg').disabled, true);
   assert.equal(app.ids.get('btn-pause').classList.contains('hidden'), true);
@@ -254,11 +275,51 @@ test('runtime policy stays visible and disables collection and delivery controls
     running: true, paused: false, accounts: {},
     runtime: { mode: 'live', collectionEnabled: true, deliveryEnabled: true },
   }) });
-  assert.match(app.ids.get('runtime-notice').textContent, /twscrape 自动采集/);
+  assert.equal(app.ids.get('runtime-notice').textContent, '');
+  assert.equal(app.ids.get('runtime-notice').classList.contains('hidden'), true);
   assert.equal(app.ids.get('btn-test-collector').disabled, false);
   assert.equal(app.ids.get('btn-test-tg').disabled, false);
   assert.equal(app.ids.get('live-text').textContent, '运行中');
   assert.equal(app.ids.get('collector-name').textContent, 'twscrape');
+});
+
+test('failed controls show the stopped state and keep retry controls available only in live mode', async () => {
+  const runtime = { mode: 'live', collectionEnabled: true, deliveryEnabled: true };
+  let attempts = 0;
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig(10, { runtime }));
+    if (url === 'api/control') {
+      attempts++;
+      return attempts === 1 ? response({ ok: false, paused: true, controlPending: true, error: '存储失败，监控保持停止' }, 500)
+        : response({ ok: true, paused: true, runtime });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  });
+  const stream = app.EventSource.instances.at(-1);
+  stream.listeners.status({ data: JSON.stringify({ running: true, paused: false, accounts: {}, runtime }) });
+  assert.equal(app.ids.get('runtime-notice').classList.contains('hidden'), true);
+  await app.ids.get('btn-pause').onclick();
+  assert.equal(app.ids.get('live-text').textContent, '已停止，等待确认');
+  assert.match(app.ids.get('runtime-notice').textContent, /请重试暂停或恢复/);
+  assert.equal(app.ids.get('runtime-notice').classList.contains('hidden'), false);
+  assert.equal(app.ids.get('btn-pause').classList.contains('hidden'), false);
+  assert.equal(app.ids.get('btn-resume').classList.contains('hidden'), false);
+  assert.equal(app.ids.get('btn-pause').disabled, false);
+  assert.equal(app.ids.get('btn-resume').disabled, false);
+  stream.listeners.status({ data: JSON.stringify({ running: false, paused: true, controlPending: true, accounts: {}, runtime }) });
+  await app.ids.get('btn-pause').onclick();
+  assert.equal(attempts, 2);
+  assert.equal(app.ids.get('live-text').textContent, '已暂停');
+  assert.equal(app.ids.get('runtime-notice').textContent, '');
+  assert.equal(app.ids.get('runtime-notice').classList.contains('hidden'), true);
+  assert.equal(app.ids.get('btn-pause').classList.contains('hidden'), true);
+  assert.equal(app.ids.get('btn-resume').classList.contains('hidden'), false);
+  stream.listeners.status({ data: JSON.stringify({ running: false, paused: true, controlPending: true, accounts: {},
+    runtime: { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false } }) });
+  assert.equal(app.ids.get('live-text').textContent, '只读验证');
+  assert.equal(app.ids.get('btn-pause').classList.contains('hidden'), true);
+  assert.equal(app.ids.get('btn-resume').classList.contains('hidden'), true);
 });
 
 test('CSRF submission supports relative paths and prefers secure host-only cookies', async () => {
@@ -427,13 +488,101 @@ test('a late collector detection result cannot overwrite a reopened form or its 
 test('configuration tests do not perform a no-op save', async () => {
   const app = await loadApp(async (url) => {
     if (url === 'api/session') return response({ hasPassword: true, authed: true });
-    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/config') return response(baseConfig(10, { runtime: { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false } }));
     if (url === 'api/test/collector') return response({ ok: true, message: 'ok' });
     throw new Error(`unexpected request: ${url}`);
   });
   await app.ids.get('btn-test-collector').onclick();
   assert.equal(app.requests.filter((r) => r.url === 'api/config' && r.opts.method === 'POST').length, 0);
   assert.equal(app.requests.filter((r) => r.url === 'api/test/collector').length, 1);
+});
+
+test('clearing a saved account preserves the draft and blocks save and both configuration tests', async () => {
+  const runtime = { mode: 'live', collectionEnabled: true, deliveryEnabled: true };
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config' && opts.method === 'GET') return response(baseConfig(10, {
+      runtime, accounts: [{ username: 'alice', fetch_count: 10, check_interval: 300 }],
+    }));
+    throw new Error(`unexpected request: ${url}`);
+  });
+  const row = app.ids.get('acct-list').children[0];
+  const name = row.querySelector('.col-name');
+  name.value = '  ';
+  app.ids.get('auth_token').value = 'synthetic-unsaved-secret';
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: name });
+  for (const button of ['btn-save', 'btn-test-collector', 'btn-test-tg']) {
+    await app.ids.get(button).onclick();
+    assert.match(app.ids.get('toast').textContent, /用户名不能为空/);
+    assert.equal(name.value, '  ');
+    assert.equal(row.parentNode, app.ids.get('acct-list'));
+    assert.equal(app.ids.get('auth_token').value, 'synthetic-unsaved-secret');
+  }
+  assert.equal(app.requests.filter((r) => r.opts.method === 'POST').length, 0);
+});
+
+test('a rejected account autosave never starts collection or Telegram and preserves an editable draft', async () => {
+  const runtime = { mode: 'live', collectionEnabled: true, deliveryEnabled: true };
+  let config = baseConfig(10, { runtime, accounts: [{ username: 'alice', fetch_count: 10, check_interval: 300 }] });
+  let saves = 0;
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') {
+      if (opts.method === 'POST') {
+        saves++;
+        const body = JSON.parse(opts.body);
+        if (body.accounts[0].username === 'alice!') return response({ ok: false, error: '账号列表无效；配置未保存' }, 400);
+        config = baseConfig(11, { runtime, accounts: body.accounts });
+        return response({ ok: true, warnings: [] });
+      }
+      return response(config);
+    }
+    throw new Error(`unexpected request: ${url}`);
+  });
+  const name = app.ids.get('acct-list').children[0].querySelector('.col-name');
+  name.value = 'alice!';
+  app.ids.get('auth_token').value = 'synthetic-unsaved-secret';
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: name });
+  for (const button of ['btn-test-collector', 'btn-test-tg']) {
+    await app.ids.get(button).onclick();
+    assert.match(app.ids.get('toast').textContent, /配置未保存/);
+    assert.equal(name.value, 'alice!');
+    assert.equal(app.ids.get('auth_token').value, 'synthetic-unsaved-secret');
+    assert.equal(app.ids.get('btn-save').disabled, false);
+  }
+  assert.equal(saves, 2);
+  assert.equal(app.requests.some((r) => r.url.startsWith('api/test/')), false);
+  name.value = 'alice';
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: name });
+  await app.ids.get('btn-save').onclick();
+  assert.equal(saves, 3);
+  assert.equal(app.ids.get('auth_token').value, '');
+});
+
+test('new empty account placeholders are ignored while an explicit delete removes a saved row', async () => {
+  let config = baseConfig(10, { accounts: [{ username: 'alice', fetch_count: 10, check_interval: 300 }] });
+  const submitted = [];
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') {
+      if (opts.method === 'POST') {
+        const body = JSON.parse(opts.body);
+        submitted.push(body.accounts);
+        config = baseConfig(config.configRevision + 1, { accounts: body.accounts });
+        return response({ ok: true, warnings: [] });
+      }
+      return response(config);
+    }
+    throw new Error(`unexpected request: ${url}`);
+  });
+  app.ids.get('btn-add-acct').onclick();
+  await app.ids.get('btn-save').onclick();
+  assert.deepEqual(submitted[0], [{ username: 'alice', fetch_count: 10, check_interval: 300 }]);
+  const row = app.ids.get('acct-list').children[0];
+  assert.match(row.querySelector('.btn-x').attributes['aria-label'], /待发送消息/);
+  row.querySelector('.btn-x').onclick();
+  await app.ids.get('btn-save').onclick();
+  assert.deepEqual(submitted[1], []);
 });
 
 test('successful first setup falls back to login mode if panel loading fails', async () => {
@@ -489,6 +638,7 @@ async function runPollTimer(app) {
   const [id] = entry;
   const callback = app.timers.get(id);
   app.timers.delete(id); app.timerDelays.delete(id);
+  app.clock.advance(5000);
   callback();
   await settle();
 }
@@ -691,4 +841,537 @@ test('logout cancels polls and late responses from the old session cannot affect
   oldStream.listeners.status({ data: JSON.stringify(snapshot(2).status) });
   assert.equal(app.context.location.reloads, 1, 'old 401 must not expire the new session');
   assert.equal(app.ids.get('stat-pushes').textContent, '42');
+});
+
+test('a silent stream expires after its first frame, reports stale state, and resumes HTTP after clock rollback', async () => {
+  const runtime = { mode: 'live', collectionEnabled: true, deliveryEnabled: true };
+  let reads = 0, finishRecovery;
+  const recovery = new Promise((resolve) => { finishRecovery = resolve; });
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig(10, { runtime }));
+    if (url === 'api/status') {
+      reads++;
+      return reads === 1 ? response({ status: { running: true, accounts: {}, runtime } }) : recovery;
+    }
+    if (url === 'api/logs') return response({ logs: [] });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  app.EventSource.instances[0].listeners.status({ data: JSON.stringify({ running: true, accounts: {}, runtime, pushesToday: 9 }) });
+  assert.equal(app.ids.get('live-text').textContent, '运行中');
+  // Moving the wall clock backwards must not extend the monotonic freshness deadline.
+  app.clock.wall -= 3600000;
+  for (let i = 0; i < 5; i++) await runPollTimer(app);
+  assert.equal(reads, 1, 'fresh SSE suppresses HTTP for the first 25 seconds');
+  await runPollTimer(app);
+  assert.equal(reads, 2, 'at 30 seconds a silent SSE connection no longer suppresses HTTP');
+  assert.match(app.ids.get('live-text').textContent, /状态已过期/);
+  assert.equal(app.ids.get('livepill').classList.contains('off'), true);
+  finishRecovery(response({ status: { running: true, accounts: {}, runtime, pushesToday: 10 } }));
+  await settle();
+  assert.equal(app.ids.get('stat-pushes').textContent, '10');
+  assert.equal(app.ids.get('live-text').textContent, '运行中');
+  await runPollTimer(app);
+  assert.equal(reads, 3, 'HTTP polling continues until the stream actually supplies another status');
+});
+
+test('HTTP failure after silent SSE shows a connection error, then new SSE supersedes the retry', async () => {
+  let reads = 0, finishRetry;
+  const retry = new Promise((resolve) => { finishRetry = resolve; });
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/status') {
+      reads++;
+      if (reads === 2) throw new Error('network unavailable');
+      if (reads === 3) return retry;
+      return response(snapshot(1));
+    }
+    if (url === 'api/logs') return response({ logs: [] });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  const stream = app.EventSource.instances[0];
+  const runtime = snapshot(0).runtime;
+  stream.listeners.status({ data: JSON.stringify({ ...snapshot(5).status, runtime }) });
+  app.clock.advance(25000);
+  await runPollTimer(app);
+  assert.equal(reads, 2);
+  assert.equal(app.ids.get('live-text').textContent, '状态连接中断');
+  await runPollTimer(app);
+  stream.listeners.status({ data: JSON.stringify({ ...snapshot(7).status, runtime }) });
+  finishRetry(response(snapshot(2)));
+  await settle();
+  assert.equal(app.ids.get('stat-pushes').textContent, '7');
+  assert.equal(app.ids.get('live-text').textContent, '只读验证');
+  await runPollTimer(app);
+  assert.equal(reads, 3, 'a fresh status from the recovered stream suppresses HTTP again');
+});
+
+test('the Date fallback treats negative status age as stale', async () => {
+  let reads = 0;
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/status') { reads++; return response(snapshot(reads)); }
+    if (url === 'api/logs') return response({ logs: [] });
+    throw new Error(`unexpected request: ${url}`);
+  }, { withoutPerformance: true });
+  app.EventSource.instances[0].listeners.status({ data: JSON.stringify(snapshot(9).status) });
+  app.clock.wall -= 3600000;
+  await runPollTimer(app);
+  assert.equal(reads, 2);
+  assert.equal(app.ids.get('stat-pushes').textContent, '2');
+});
+
+test('repeated SSE errors preserve fresh HTTP status and cannot hide an HTTP failure', async () => {
+  let failHttp = false;
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/status') {
+      if (failHttp) throw new Error('HTTP unavailable');
+      return response(snapshot(1));
+    }
+    if (url === 'api/logs') return response({ logs: [] });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  const stream = app.EventSource.instances[0];
+  assert.equal(app.ids.get('live-text').textContent, '只读验证');
+  app.clock.advance(1000);
+  await stream.onerror();
+  assert.equal(app.ids.get('live-text').textContent, '只读验证', 'SSE retry failure does not invalidate fresh HTTP');
+  failHttp = true;
+  await runPollTimer(app);
+  assert.equal(app.ids.get('live-text').textContent, '状态连接中断');
+  await stream.onerror();
+  assert.equal(app.ids.get('live-text').textContent, '状态连接中断', 'SSE retry cannot clear the actual HTTP failure');
+  failHttp = false;
+  await runPollTimer(app);
+  await stream.onerror();
+  assert.equal(app.ids.get('live-text').textContent, '只读验证');
+  app.clock.advance(30000);
+  await stream.onerror();
+  assert.match(app.ids.get('live-text').textContent, /状态已过期/, 'the last successful HTTP snapshot still expires');
+});
+
+test('SSE construction failures preserve HTTP health but do not hide an expired status', async () => {
+  class BrokenEventSource {
+    static CLOSED = 2;
+    constructor() { throw new Error('EventSource unavailable'); }
+  }
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/status') return response(snapshot(1));
+    if (url === 'api/logs') return response({ logs: [] });
+    throw new Error(`unexpected request: ${url}`);
+  }, { EventSource: BrokenEventSource });
+  async function runReconnect(delay) {
+    const [id] = [...app.timerDelays].find(([, ms]) => ms === delay);
+    const callback = app.timers.get(id);
+    app.timers.delete(id); app.timerDelays.delete(id);
+    app.clock.advance(delay);
+    callback();
+    await settle();
+  }
+  assert.equal(app.ids.get('live-text').textContent, '只读验证');
+  await runReconnect(1000);
+  assert.equal(app.ids.get('live-text').textContent, '只读验证');
+  app.clock.advance(30000);
+  await runReconnect(2000);
+  assert.match(app.ids.get('live-text').textContent, /状态已过期/);
+});
+
+test('collection and Telegram tests retain independent busy state across status updates and configuration saves', async () => {
+  const runtime = { mode: 'live', collectionEnabled: true, deliveryEnabled: true };
+  let finishCollection, finishTelegram, config = baseConfig(10, { runtime });
+  const collection = new Promise((resolve) => { finishCollection = resolve; });
+  const telegram = new Promise((resolve) => { finishTelegram = resolve; });
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') {
+      if (opts.method === 'POST') {
+        config = baseConfig(11, { runtime, tg_chat_id: JSON.parse(opts.body).tg_chat_id });
+        return response({ ok: true, warnings: [] });
+      }
+      return response(config);
+    }
+    if (url === 'api/status') return response({ status: { running: true, accounts: {}, runtime, configRevision: config.configRevision } });
+    if (url === 'api/logs') return response({ logs: [] });
+    if (url === 'api/test/collector') return collection;
+    if (url === 'api/test/telegram') return telegram;
+    throw new Error(`unexpected request: ${url}`);
+  });
+  const collectButton = app.ids.get('btn-test-collector'), tgButton = app.ids.get('btn-test-tg');
+  const collecting = collectButton.onclick();
+  await settle();
+  assert.equal(collectButton.disabled, true);
+  assert.equal(tgButton.disabled, false, 'one kind of test does not block the other');
+  const sending = tgButton.onclick();
+  await settle();
+  app.EventSource.instances[0].listeners.status({ data: JSON.stringify({ running: true, accounts: {}, runtime, configRevision: 10 }) });
+  assert.equal(collectButton.disabled, true);
+  assert.equal(tgButton.disabled, true);
+  app.ids.get('btn-settings').onclick();
+  app.ids.get('tg_chat_id').value = '123';
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: app.ids.get('tg_chat_id') });
+  await app.ids.get('btn-save').onclick();
+  assert.equal(collectButton.disabled, true);
+  assert.equal(tgButton.disabled, true, 'save/reload does not clear either test busy flag');
+  await collectButton.onclick(); await tgButton.onclick();
+  assert.equal(app.requests.filter((r) => r.url === 'api/test/collector').length, 1);
+  assert.equal(app.requests.filter((r) => r.url === 'api/test/telegram').length, 1);
+  finishCollection(response({ ok: true, message: 'collection complete' }));
+  await collecting;
+  assert.equal(collectButton.disabled, false);
+  assert.equal(tgButton.disabled, true);
+  finishTelegram(response({ ok: true, message: 'telegram complete' }));
+  await sending;
+  assert.equal(tgButton.disabled, false);
+});
+
+test('logout cancels a test and its late 401 cannot clear a new session test or show stale feedback', async () => {
+  const runtime = { mode: 'live', collectionEnabled: true, deliveryEnabled: true };
+  let testCount = 0, finishOld, finishNew;
+  const oldTest = new Promise((resolve) => { finishOld = resolve; });
+  const newTest = new Promise((resolve) => { finishNew = resolve; });
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig(10, { runtime }));
+    if (url === 'api/status') return response({ status: { running: true, accounts: {}, runtime } });
+    if (url === 'api/logs') return response({ logs: [] });
+    if (url === 'api/test/telegram') return ++testCount === 1 ? oldTest : newTest;
+    if (url === 'api/logout' || url === 'api/login') return response({ ok: true });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  const button = app.ids.get('btn-test-tg');
+  const first = button.onclick(); await settle();
+  const oldRequest = app.requests.find((r) => r.url === 'api/test/telegram');
+  await app.ids.get('logout').onclick();
+  assert.equal(oldRequest.opts.signal.aborted, true);
+  app.ids.get('auth-pw').value = 'new-session-password';
+  await app.ids.get('auth-form').listeners.submit[0]({ preventDefault() {} });
+  const second = button.onclick(); await settle();
+  finishOld(response({ error: 'old session expired' }, 401)); await first;
+  assert.equal(app.context.location.reloads, 1);
+  assert.equal(button.disabled, true);
+  assert.equal(button.textContent, '测试中…');
+  assert.doesNotMatch(app.ids.get('toast').textContent, /old session|会话/);
+  finishNew(response({ ok: true, message: 'new session test complete' })); await second;
+  assert.equal(button.disabled, false);
+  assert.match(app.ids.get('toast').textContent, /new session test complete/);
+});
+
+test('a test waiting on an old-session draft save cannot launch collection or overwrite a new draft', async () => {
+  const runtime = { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false };
+  let finishSave;
+  const pendingSave = new Promise((resolve) => { finishSave = resolve; });
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return opts.method === 'POST' ? pendingSave : response(baseConfig(10, { runtime }));
+    if (url === 'api/status') return response(snapshot(1));
+    if (url === 'api/logs') return response({ logs: [] });
+    if (url === 'api/logout' || url === 'api/login') return response({ ok: true });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  app.ids.get('btn-settings').onclick();
+  app.ids.get('tg_chat_id').value = '123';
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: app.ids.get('tg_chat_id') });
+  const collecting = app.ids.get('btn-test-collector').onclick(); await settle();
+  await app.ids.get('logout').onclick();
+  app.ids.get('auth-pw').value = 'new-session-password';
+  await app.ids.get('auth-form').listeners.submit[0]({ preventDefault() {} });
+  app.ids.get('auth_token').value = 'synthetic new draft';
+  finishSave(response({ ok: true, warnings: [] })); await collecting;
+  assert.equal(app.ids.get('auth_token').value, 'synthetic new draft');
+  assert.equal(app.requests.filter((r) => r.url === 'api/test/collector').length, 0);
+  assert.equal(app.ids.get('btn-save').disabled, false);
+  assert.doesNotMatch(app.ids.get('toast').textContent, /旧会话/);
+});
+
+test('AI settings join save payload, busy state, reload and private key clearing', async () => {
+  let config = baseConfig();
+  let posted, finishSave;
+  const pendingSave = new Promise((resolve) => { finishSave = resolve; });
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config' && opts.method === 'GET') return response(config);
+    if (url === 'api/config' && opts.method === 'POST') {
+      posted = JSON.parse(opts.body);
+      config = baseConfig(11, { ai_translation_enabled: posted.ai_translation_enabled,
+        ai_base_url: posted.ai_base_url, ai_model: posted.ai_model,
+        secrets: { hasAuthToken: true, hasCt0: true, hasTgBotToken: true, hasAiApiKey: true } });
+      return pendingSave;
+    }
+    if (url === 'api/logout') return response({ ok: true });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  const field = (id) => app.ids.get(id);
+  app.ids.get('btn-settings').onclick();
+  assert.equal(field('ai_translation_enabled').checked, false);
+  assert.equal(field('ai_base_url').value, 'https://api.openai.com/v1');
+  assert.equal(field('ai_api_key').type, 'password');
+  field('ai_translation_enabled').checked = true;
+  field('ai_base_url').value = 'https://synthetic.example.test/v1';
+  field('ai_model').value = 'synthetic-model';
+  field('ai_api_key').value = 'synthetic-key';
+  for (const fn of field('settings').listeners.input) fn({ target: field('ai_translation_enabled') });
+  const pending = field('btn-save').onclick(); await settle();
+  for (const id of ['ai_translation_enabled', 'ai_base_url', 'ai_model', 'ai_api_key', 'clear_ai_api_key']) {
+    assert.equal(field(id).disabled, true, id);
+  }
+  assert.equal(posted.ai_translation_enabled, true);
+  assert.equal(posted.ai_base_url, 'https://synthetic.example.test/v1');
+  assert.equal(posted.ai_model, 'synthetic-model');
+  assert.equal(posted.ai_api_key, 'synthetic-key');
+  assert.equal(posted.clear_ai_api_key, false);
+  finishSave(response({ ok: true, warnings: [] })); await pending;
+  assert.equal(field('ai_api_key').value, '');
+  assert.equal(field('ai_api_key').placeholder, '••••••••••••');
+  assert.equal(field('ai_translation_enabled').checked, true);
+  assert.equal(field('ai_model').value, 'synthetic-model');
+  assert.equal(field('ai_api_key').disabled, false);
+  field('ai_api_key').value = 'synthetic-unsaved-key';
+  field('clear_ai_api_key').checked = true;
+  await field('logout').onclick();
+  assert.equal(field('ai_api_key').value, '');
+  assert.equal(field('ai_api_key').type, 'password');
+  assert.equal(field('clear_ai_api_key').checked, false);
+});
+
+test('remote AI changes and a key deletion draft participate in configuration conflict protection', async () => {
+  for (const caseName of ['remote-model', 'local-key-deletion']) {
+    let config = baseConfig(10);
+    let writes = 0;
+    const app = await loadApp(async (url, opts) => {
+      if (url === 'api/session') return response({ hasPassword: true, authed: true });
+      if (url === 'api/config') {
+        if (opts.method === 'POST') { writes++; return response({ ok: true, warnings: [] }); }
+        return response(config);
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    app.ids.get('btn-settings').onclick();
+    const draft = app.ids.get(caseName === 'remote-model' ? 'tg_chat_id' : 'clear_ai_api_key');
+    draft.value = '333'; draft.checked = true;
+    for (const fn of app.ids.get('settings').listeners.input) fn({ target: draft });
+    config = baseConfig(11, caseName === 'remote-model' ? { ai_model: 'remote-model' } : {});
+    app.EventSource.instances[0].listeners.status({ data: JSON.stringify({ running: true, accounts: {}, configRevision: 11 }) });
+    await settle();
+    await app.ids.get('btn-save').onclick();
+    assert.equal(writes, 0, caseName);
+    assert.match(app.ids.get('toast').textContent, /其他标签页/);
+    app.ids.get('settings-close').onclick(); await settle();
+    assert.equal(app.ids.get('ai_model').value, config.ai_model);
+    assert.equal(app.ids.get('clear_ai_api_key').checked, false);
+  }
+});
+
+const aiTestRuntime = { mode: 'live', collectionEnabled: true, deliveryEnabled: true, translationEnabled: true };
+const aiTestConfig = (revision = 10, overrides = {}) => baseConfig(revision, {
+  runtime: aiTestRuntime, ai_model: 'synthetic-model',
+  secrets: { hasAuthToken: true, hasCt0: true, hasTgBotToken: true, hasAiApiKey: true }, ...overrides,
+});
+
+async function loadAiTestApp(handle, initialConfig = aiTestConfig()) {
+  return loadApp(async (url, opts) => {
+    const custom = await handle(url, opts);
+    if (custom !== undefined) return custom;
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config' && opts.method === 'GET') return response(initialConfig);
+    if (url === 'api/status') return response({ status: { running: true, accounts: {}, runtime: initialConfig.runtime, configRevision: initialConfig.configRevision } });
+    if (url === 'api/logs') return response({ logs: [] });
+    if (url === 'api/logout' || url === 'api/login') return response({ ok: true });
+    throw new Error(`unexpected request: ${url}`);
+  });
+}
+
+function editAiField(app, id, value) {
+  const field = app.ids.get(id);
+  if (typeof value === 'boolean') field.checked = value;
+  else field.value = value;
+  for (const fn of app.ids.get('settings').listeners.input) fn({ target: field });
+}
+
+test('AI hi test sends only the current draft without saving or enabling translation and renders replies as text', async () => {
+  let payload;
+  const app = await loadAiTestApp(async (url, opts) => {
+    if (url === 'api/test/ai') { payload = JSON.parse(opts.body); return response({ ok: true, reply: '<b>Hello!</b>\nHow can I help?', elapsedMs: 13 }); }
+  });
+  app.ids.get('btn-settings').onclick();
+  editAiField(app, 'ai_base_url', 'https://draft.example.test/v1');
+  editAiField(app, 'ai_model', 'draft-model');
+  editAiField(app, 'ai_api_key', 'synthetic-draft-key');
+  app.ids.get('auth_token').value = 'synthetic-x-draft';
+  app.ids.get('tg_chat_id').value = 'unsaved-chat';
+  await app.ids.get('btn-test-ai').onclick();
+  assert.deepEqual(payload, { config_revision: 10, ai_base_url: 'https://draft.example.test/v1', ai_model: 'draft-model', clear_ai_api_key: false, ai_api_key: 'synthetic-draft-key' });
+  assert.equal(app.requests.filter((r) => r.url === 'api/config' && r.opts.method === 'POST').length, 0);
+  assert.equal(app.ids.get('ai_translation_enabled').checked, false);
+  assert.equal(app.ids.get('ai_api_key').value, 'synthetic-draft-key');
+  assert.equal(app.ids.get('auth_token').value, 'synthetic-x-draft');
+  assert.equal(app.ids.get('tg_chat_id').value, 'unsaved-chat');
+  const result = app.ids.get('ai-test-result');
+  assert.equal(result.textContent, '测试成功（13 毫秒）\nAI 回复：\n<b>Hello!</b>\nHow can I help?');
+  assert.equal(result.children.length, 0, 'provider markup is never inserted into the document');
+  assert.equal(result.attributes['aria-busy'], 'false');
+  assert.equal(app.ids.get('btn-test-ai').disabled, false);
+});
+
+test('AI test shows structured and HTTP errors while preserving the draft and saved-key reuse intent', async () => {
+  for (const status of [200, 400]) {
+    let payload;
+    const app = await loadAiTestApp(async (url, opts) => {
+      if (url === 'api/test/ai') { payload = JSON.parse(opts.body); return response({ ok: false, code: 'ai_key_required', message: '更换 API 地址时请重新填写 API Key' }, status); }
+    });
+    editAiField(app, 'ai_base_url', 'https://draft.example.test/v1');
+    await app.ids.get('btn-test-ai').onclick();
+    assert.equal(Object.hasOwn(payload, 'ai_api_key'), false, 'a blank key asks the server to validate saved-key reuse');
+    assert.match(app.ids.get('ai-test-result').textContent, /测试失败：更换 API 地址时请重新填写 API Key/);
+    assert.equal(app.ids.get('ai_base_url').value, 'https://draft.example.test/v1');
+    assert.equal(app.ids.get('ai_api_key').value, '');
+    assert.equal(app.ids.get('btn-test-ai').disabled, false);
+    assert.equal(app.requests.some((r) => r.url === 'api/config' && r.opts.method === 'POST'), false);
+  }
+});
+
+test('AI tests require the process translation permission but not the translation checkbox, and reject an empty model', async () => {
+  for (const runtime of [undefined,
+    { mode: 'development', collectionEnabled: false, deliveryEnabled: false, translationEnabled: false },
+    { mode: 'read-only', collectionEnabled: true, deliveryEnabled: false, translationEnabled: false },
+    { mode: 'live', collectionEnabled: true, deliveryEnabled: true }]) {
+    const app = await loadAiTestApp(async () => {}, aiTestConfig(10, { runtime }));
+    assert.equal(app.ids.get('btn-test-ai').disabled, true);
+    await app.ids.get('btn-test-ai').onclick();
+    assert.equal(app.requests.some((r) => r.url === 'api/test/ai'), false);
+  }
+  const app = await loadAiTestApp(async () => {});
+  assert.equal(app.ids.get('ai_translation_enabled').checked, false);
+  assert.equal(app.ids.get('btn-test-ai').disabled, false);
+  editAiField(app, 'ai_model', '  ');
+  await app.ids.get('btn-test-ai').onclick();
+  assert.match(app.ids.get('ai-test-result').textContent, /请先填写模型名称/);
+  assert.equal(app.requests.some((r) => r.url === 'api/test/ai'), false);
+});
+
+test('AI tests retain independent busy state across status updates and unrelated configuration saves', async () => {
+  let config = aiTestConfig(), finishTest, finishSave;
+  const pendingTest = new Promise((resolve) => { finishTest = resolve; });
+  const pendingSave = new Promise((resolve) => { finishSave = resolve; });
+  const app = await loadAiTestApp(async (url, opts) => {
+    if (url === 'api/test/ai') return pendingTest;
+    if (url === 'api/config') {
+      if (opts.method === 'POST') { config = aiTestConfig(11, { tg_chat_id: JSON.parse(opts.body).tg_chat_id }); return pendingSave; }
+      return response(config);
+    }
+  });
+  const button = app.ids.get('btn-test-ai');
+  const testing = button.onclick(); await settle();
+  assert.equal(button.disabled, true);
+  assert.equal(button.textContent, '发送中…');
+  assert.equal(app.ids.get('ai-test-result').attributes['aria-busy'], 'true');
+  assert.equal(app.ids.get('btn-test-collector').disabled, false);
+  app.EventSource.instances[0].listeners.status({ data: JSON.stringify({ running: true, accounts: {}, runtime: aiTestRuntime, configRevision: 10 }) });
+  assert.equal(button.disabled, true);
+  app.ids.get('btn-settings').onclick();
+  editAiField(app, 'tg_chat_id', '123');
+  const saving = app.ids.get('btn-save').onclick(); await settle();
+  assert.equal(button.disabled, true);
+  finishSave(response({ ok: true, warnings: [] })); await saving;
+  assert.equal(button.disabled, true);
+  assert.equal(button.textContent, '发送中…');
+  await button.onclick();
+  assert.equal(app.requests.filter((r) => r.url === 'api/test/ai').length, 1);
+  finishTest(response({ ok: true, reply: 'Hello', elapsedMs: 50 })); await testing;
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, '发送 hi 测试');
+});
+
+test('editing an AI setting cancels and clears its test and ignores late responses without disturbing a new test', async () => {
+  for (const [field, value] of [['ai_base_url', 'https://new.example.test/v1'], ['ai_model', 'new-model'],
+    ['ai_api_key', 'synthetic-new-key'], ['clear_ai_api_key', true], ['ai_translation_enabled', true]]) {
+    let count = 0, finishOld, finishNew;
+    const oldTest = new Promise((resolve) => { finishOld = resolve; });
+    const newTest = new Promise((resolve) => { finishNew = resolve; });
+    const app = await loadAiTestApp(async (url) => { if (url === 'api/test/ai') return ++count === 1 ? oldTest : newTest; });
+    const button = app.ids.get('btn-test-ai'), result = app.ids.get('ai-test-result');
+    const first = button.onclick(); await settle();
+    const oldRequest = app.requests.find((r) => r.url === 'api/test/ai');
+    editAiField(app, field, value);
+    assert.equal(oldRequest.opts.signal.aborted, true, field);
+    assert.equal(result.classList.contains('hidden'), true, field);
+    assert.equal(result.textContent, '', field);
+    const second = button.onclick(); await settle();
+    finishOld(response({ error: 'old draft expired' }, 401)); await first;
+    assert.equal(app.context.location.reloads, 0, 'an aborted stale draft cannot expire the current session');
+    assert.equal(button.disabled, true);
+    assert.equal(button.textContent, '发送中…');
+    assert.doesNotMatch(result.textContent, /old draft/);
+    finishNew(response({ ok: true, reply: 'new draft reply', elapsedMs: 5 })); await second;
+    assert.match(result.textContent, /new draft reply/);
+    editAiField(app, field, value);
+    assert.equal(result.classList.contains('hidden'), true, 'editing also clears a completed result');
+  }
+});
+
+test('logout cancels the AI test and late old-session results cannot overwrite a new-session result', async () => {
+  let count = 0, finishOld, finishNew;
+  const oldTest = new Promise((resolve) => { finishOld = resolve; });
+  const newTest = new Promise((resolve) => { finishNew = resolve; });
+  const app = await loadAiTestApp(async (url) => { if (url === 'api/test/ai') return ++count === 1 ? oldTest : newTest; });
+  const button = app.ids.get('btn-test-ai');
+  const first = button.onclick(); await settle();
+  const oldRequest = app.requests.find((r) => r.url === 'api/test/ai');
+  await app.ids.get('logout').onclick();
+  assert.equal(oldRequest.opts.signal.aborted, true);
+  assert.equal(app.ids.get('ai-test-result').classList.contains('hidden'), true);
+  app.ids.get('auth-pw').value = 'synthetic-login-password';
+  await app.ids.get('auth-form').listeners.submit[0]({ preventDefault() {} });
+  const second = button.onclick(); await settle();
+  finishOld(response({ error: 'old session expired' }, 401)); await first;
+  assert.equal(app.context.location.reloads, 1);
+  assert.equal(button.disabled, true);
+  finishNew(response({ ok: true, reply: 'new session reply', elapsedMs: 1 })); await second;
+  assert.match(app.ids.get('ai-test-result').textContent, /new session reply/);
+  assert.equal(button.disabled, false);
+});
+
+test('AI test timeout restores the button and ignores late success while a retry is pending', async () => {
+  let count = 0, finishOld, finishNew;
+  const oldTest = new Promise((resolve) => { finishOld = resolve; });
+  const newTest = new Promise((resolve) => { finishNew = resolve; });
+  const app = await loadAiTestApp(async (url) => { if (url === 'api/test/ai') return ++count === 1 ? oldTest : newTest; });
+  const button = app.ids.get('btn-test-ai');
+  const first = button.onclick(); await settle();
+  const timeout = [...app.timerDelays].find(([, delay]) => delay === 20000);
+  assert.ok(timeout);
+  app.timers.get(timeout[0])();
+  assert.equal(app.requests.find((r) => r.url === 'api/test/ai').opts.signal.aborted, true);
+  assert.equal(button.disabled, false);
+  assert.match(app.ids.get('ai-test-result').textContent, /超时/);
+  const second = button.onclick(); await settle();
+  finishOld(response({ ok: true, reply: 'old timed out reply' })); await first;
+  assert.equal(button.disabled, true);
+  assert.doesNotMatch(app.ids.get('ai-test-result').textContent, /old timed out/);
+  finishNew(response({ ok: true, reply: 'retry reply', elapsedMs: 1 })); await second;
+  assert.match(app.ids.get('ai-test-result').textContent, /retry reply/);
+});
+
+test('a remote configuration revision cancels an AI test even when saved-key presence is unchanged', async () => {
+  let config = aiTestConfig(), finishTest;
+  const pendingTest = new Promise((resolve) => { finishTest = resolve; });
+  const app = await loadAiTestApp(async (url, opts) => {
+    if (url === 'api/config' && opts.method === 'GET') return response(config);
+    if (url === 'api/test/ai') return pendingTest;
+  });
+  const testing = app.ids.get('btn-test-ai').onclick(); await settle();
+  const request = app.requests.find((r) => r.url === 'api/test/ai');
+  config = aiTestConfig(11);
+  app.EventSource.instances[0].listeners.status({ data: JSON.stringify({ running: true, accounts: {}, runtime: aiTestRuntime, configRevision: 11 }) });
+  await settle();
+  assert.equal(request.opts.signal.aborted, true, 'a saved key may have been rotated remotely');
+  assert.equal(app.ids.get('ai-test-result').classList.contains('hidden'), true);
+  finishTest(response({ ok: true, reply: 'reply from old saved key', elapsedMs: 2 })); await testing;
+  assert.equal(app.ids.get('ai-test-result').textContent, '');
+  assert.equal(app.ids.get('btn-test-ai').disabled, false);
 });

@@ -23,6 +23,7 @@ sent_ids.json
 delivery_state.json
 delivery_state.initialized.json
 config.json
+config_transaction.json
 
 # --- store.js 原子写残留的临时文件 --------------------------------------
 # 命名形如：data/config.json.<pid>.<rand>.tmp（正常 rename 后消失，崩溃时可能残留）

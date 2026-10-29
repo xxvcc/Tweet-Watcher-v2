@@ -163,3 +163,45 @@ test('failed epoch persistence never reports a revocation that disappears on res
     store.writeJSON = originalWrite;
   }
 });
+
+test('directory fsync failure never reports a successful epoch change and recovery remains durable', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-auth-sync-'));
+  try {
+    const child = spawnSync(process.execPath, ['-e', `
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      const store = require('./lib/store');
+      store.writeJSON('session_secret.json', { key: 'a'.repeat(64), epoch: 1 });
+      const auth = require('./lib/auth');
+      const token = auth.makeSession();
+      let revocations = 0;
+      auth.onSessionRevoked(() => { revocations++; });
+      const fsync = fs.fsyncSync;
+      let failDirectory = true;
+      fs.fsyncSync = (fd) => {
+        if (failDirectory && fs.fstatSync(fd).isDirectory()) {
+          throw Object.assign(new Error('synthetic directory sync failure'), { code: 'EIO' });
+        }
+        return fsync(fd);
+      };
+      assert.throws(() => auth.bumpEpoch(), { code: 'EIO' });
+      assert.equal(auth.sessionEpoch(), 1);
+      assert.equal(revocations, 0);
+      assert.throws(() => auth.hasPassword(), { code: 'EIO' });
+      failDirectory = false;
+      auth.bumpEpoch();
+      assert.equal(auth.sessionEpoch(), 2);
+      assert.equal(revocations, 1);
+      assert.equal(auth.verifySession(token), false);
+      delete require.cache[require.resolve('./lib/auth')];
+      const restarted = require('./lib/auth');
+      assert.equal(restarted.sessionEpoch(), 2);
+      assert.equal(restarted.verifySession(token), false);
+    `], { cwd: path.resolve(__dirname, '..'), env: { ...process.env, DATA_DIR: directory }, encoding: 'utf8', timeout: 10000 });
+    assert.equal(child.status, 0, child.stderr);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Tweet Watcher v2</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%A6%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=0.1.0-beta.2">
+<link rel="stylesheet" href="style.css?v=__STYLE_CSS_VERSION__">
 </head>
 <body>
 
@@ -115,6 +115,26 @@
         <button class="btn-ghost btn-sm" id="btn-test-tg" type="button">🧪 测试 Telegram 推送</button>
       </div>
 
+      <div class="section" id="ai-translation-settings">
+        <h3>AI 翻译</h3>
+        <label class="check-label" for="ai_translation_enabled"><input type="checkbox" id="ai_translation_enabled"> 将非中文推文翻译为简体中文</label>
+        <div class="hint">结合正文文字和 X 语言标记判断；纯中文跳过，混合内容保留中文、翻译外语部分。Telegram 同时保留原文和译文，翻译失败时继续推送原文。仅在 live 模式下调用 AI。</div>
+        <label for="ai_base_url">API 地址</label>
+        <input type="url" id="ai_base_url" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="2048" placeholder="https://api.openai.com/v1">
+        <div class="hint">使用兼容 OpenAI Chat Completions 的 HTTPS API；需要翻译的正文会发送至所填服务。</div>
+        <label for="ai_model">模型</label>
+        <input type="text" id="ai_model" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="160" placeholder="填写服务商提供的模型名称">
+        <label for="ai_api_key">API Key</label>
+        <input type="password" id="ai_api_key" autocomplete="new-password" spellcheck="false" autocapitalize="off" maxlength="4096" placeholder="填写 AI 服务的 API Key">
+        <div class="hint">已保存的 Key 不会显示，留空即保持不变。更换 API 地址时需重新填写 Key。</div>
+        <label class="check-label" for="clear_ai_api_key"><input type="checkbox" id="clear_ai_api_key"> 保存时清除已有 API Key（请同时关闭翻译）</label>
+        <div class="inline-actions">
+          <button class="btn-ghost btn-sm" id="btn-test-ai" type="button" aria-describedby="ai-test-hint">发送 hi 测试</button>
+        </div>
+        <div class="hint" id="ai-test-hint">使用当前填写的地址、模型和 Key 发送 hi，留空 Key 时使用已保存的 Key。不保存配置，也不启用翻译；仅在 live 模式下可用。</div>
+        <div id="ai-test-result" class="ai-test-result hidden" role="status" aria-live="polite" aria-atomic="true" aria-busy="false"></div>
+      </div>
+
       <div class="section">
         <h3>其他</h3>
         <label>采集程序</label>
@@ -145,6 +165,6 @@
   </div>
 </div>
 
-<script src="app.js?v=0.1.0-beta.2"></script>
+<script src="app.js?v=__APP_JS_VERSION__"></script>
 </body>
 </html>

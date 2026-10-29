@@ -23,6 +23,38 @@ function tweets(start, count, text = '') {
   return Array.from({ length: count }, (_, i) => ({ id: String(start + i), text }));
 }
 
+test('optional language metadata survives restart and old records remain readable', () => {
+  const { box, store, files } = harness();
+  box.baseline('alice', ['1']);
+  box.capture('alice', [{ id: '2', text: 'English body', lang: 'EN' }, { id: '3', text: 'Old queued body' }], BINDING, null);
+  const restarted = createOutbox(store, 200);
+  restarted.flush();
+  assert.equal(restarted.get('alice').pending[0].lang, 'en');
+  assert.equal(Object.hasOwn(restarted.get('alice').pending[1], 'lang'), false);
+  const saved = structuredClone(files.get('delivery_state.json'));
+  for (const lang of [null, 3, '', 'e'.repeat(36), 'en\nsecret', 'en_US', {}]) {
+    assert.throws(() => box.capture('alice', [{ id: '4', text: 'body', lang }], BINDING, null), /语言无效/);
+    assert.deepEqual(files.get('delivery_state.json'), saved);
+  }
+  saved.accounts.alice.pending[0].lang = { invalid: true };
+  const corrupt = harness([['delivery_state.json', saved]]);
+  assert.throws(() => corrupt.box.flush(), { code: 'DATA_CORRUPT' });
+});
+
+test('multilingual pending bodies retain their language metadata across restart', () => {
+  const { box, store } = harness();
+  const originals = [
+    ['JA', 'これは新しいモデルです。'], ['ru', 'Это новая модель.'],
+    ['ar', 'هذا نموذج جديد.'], ['fr', 'Bonjour le monde.'], ['zh-Hant', '這是新的模型。'],
+  ].map(([lang, text], index) => ({ id: String(index + 2), lang, text }));
+  box.baseline('alice', ['1']);
+  box.capture('alice', originals, BINDING, null);
+  const restarted = createOutbox(store, 200);
+  restarted.flush();
+  assert.deepEqual(restarted.get('alice').pending.map(({ id, text, lang }) => ({ id, text, lang })),
+    originals.map((tweet) => ({ ...tweet, lang: tweet.lang.toLowerCase() })));
+});
+
 test('a baseline larger than the dedup history retains the newest acquisition checkpoint', () => {
   const { box, files } = harness();
   box.flush();
@@ -292,4 +324,74 @@ test('corrupt acquisition checkpoints fail closed instead of dropping the fallba
     assert.throws(() => createOutbox(store, 200).flush(), { code: 'DATA_CORRUPT' });
     assert.equal(writes.length, count);
   }
+});
+
+test('real directory fsync faults block marker, capture and acknowledgement until recovery', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-outbox-sync-'));
+  try {
+    const child = spawnSync(process.execPath, ['-e', `
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      const store = require('./lib/store');
+      const { createOutbox } = require('./lib/outbox');
+      const box = createOutbox(store, 200);
+      const binding = 'a'.repeat(64);
+      const fsync = fs.fsyncSync;
+      const rename = fs.renameSync;
+      let failDirectory = false;
+      let failMarker = true;
+      fs.fsyncSync = (fd) => {
+        if (failDirectory && fs.fstatSync(fd).isDirectory()) {
+          throw Object.assign(new Error('synthetic directory sync failure'), { code: 'EIO' });
+        }
+        return fsync(fd);
+      };
+      fs.renameSync = (from, to) => {
+        rename(from, to);
+        if (failMarker && to.endsWith('/delivery_state.initialized.json')) failDirectory = true;
+      };
+      assert.throws(() => box.baseline('alice', ['1'], '1'), { code: 'OUTBOX_WRITE' });
+      assert.equal(box.ready(), false);
+      assert.throws(() => box.flush(), { code: 'EIO' });
+      assert.equal(box.ready(), false);
+      failMarker = failDirectory = false;
+      box.flush();
+      assert.equal(box.ready(), true);
+      failDirectory = true;
+      assert.throws(() => box.capture('alice', [{ id: '2', text: 'retained' }], binding, null, '2'), { code: 'OUTBOX_WRITE' });
+      assert.equal(box.ready(), false);
+      assert.equal(box.get('alice').acquisitionWatermark, '1');
+      assert.deepEqual(box.get('alice').pending, []);
+      assert.throws(() => box.capture('alice', [{ id: '3' }], binding, null, '3'), /未落盘事务/);
+      assert.throws(() => box.flush(), { code: 'EIO' });
+      assert.throws(() => createOutbox(store, 200).flush(), { code: 'EIO' });
+      failDirectory = false;
+      box.flush();
+      assert.equal(box.ready(), true);
+      assert.equal(box.get('alice').acquisitionWatermark, '2');
+      assert.equal(box.get('alice').pending[0].text, 'retained');
+      const restarted = createOutbox(store, 200);
+      restarted.flush();
+      assert.equal(restarted.get('alice').pending[0].id, '2');
+      failDirectory = true;
+      assert.throws(() => box.acknowledge('alice', '2', []), { code: 'OUTBOX_WRITE' });
+      assert.equal(box.ready(), false);
+      assert.equal(box.get('alice').pending[0].id, '2');
+      assert.throws(() => box.acknowledge('alice', '2', []), /未落盘事务/);
+      assert.throws(() => box.flush(), { code: 'EIO' });
+      failDirectory = false;
+      box.flush();
+      assert.equal(box.ready(), true);
+      assert.deepEqual(box.get('alice').pending, []);
+      const acknowledged = createOutbox(store, 200);
+      acknowledged.flush();
+      assert.deepEqual(acknowledged.get('alice').pending, []);
+      assert.ok(acknowledged.get('alice').sent.includes('2'));
+    `], { cwd: path.resolve(__dirname, '..'), env: { ...process.env, DATA_DIR: directory }, encoding: 'utf8', timeout: 10000 });
+    assert.equal(child.status, 0, child.stderr);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });

@@ -43,14 +43,16 @@
     if (request.generation != null && (!panelActive || request.generation !== panelGeneration)) {
       throw new Error('已忽略旧会话响应');
     }
+    if (request.signal?.aborted) throw new Error('请求已取消');
     if (res.status === 401 && !KEEP_ON_401.has(path)) {
       stopPanelUpdates();
       location.reload(); // 会话已失效：回登录页，而不是让面板停在过期数据上
       throw new Error('会话已失效，请重新登录');
     }
     if (!res.ok) {
-      const err = new Error((data && data.error) || ('HTTP ' + res.status));
+      const err = new Error((data && (data.error || data.message)) || ('HTTP ' + res.status));
       err.status = res.status;
+      err.controlPending = data?.controlPending === true;
       throw err;
     }
     return data || {};
@@ -153,6 +155,11 @@
   let remoteConfigPending = false;
   let remoteConfigRevision = null;
   let loadedConfigSignature = null;
+  let loadedAiKeyPresent = false;
+  const SECRET_FIELDS = ['auth_token', 'ct0', 'tg_bot_token', 'ai_api_key'];
+  const AI_FIELDS = ['ai_translation_enabled', 'ai_base_url', 'ai_model', 'ai_api_key', 'clear_ai_api_key'];
+  const testRequests = { collector: null, telegram: null };
+  let aiTestRequest = null;
   const feedBuf = [];
   const feedSeen = new Set(); // 活动流去重键（防 SSE 重连回放重复）
 
@@ -234,15 +241,19 @@
     return JSON.stringify({
       tg_chat_id: (c && c.tg_chat_id) || '',
       accounts: Array.isArray(c && c.accounts) ? c.accounts : [],
+      ai_translation_enabled: !!(c && c.ai_translation_enabled),
+      ai_base_url: (c && c.ai_base_url) || 'https://api.openai.com/v1',
+      ai_model: (c && c.ai_model) || '',
       secrets: {
         hasAuthToken: !!secrets.hasAuthToken,
         hasCt0: !!secrets.hasCt0,
         hasTgBotToken: !!secrets.hasTgBotToken,
+        hasAiApiKey: !!secrets.hasAiApiKey,
       },
     });
   }
   function hasSecretDraft() {
-    return ['auth_token', 'ct0', 'tg_bot_token'].some((id) => !!$(id).value);
+    return SECRET_FIELDS.some((id) => !!$(id).value) || $('clear_ai_api_key').checked;
   }
   function noteRemoteConfigConflict(revision) {
     if (!remoteConfigPending) toast('其他标签页已更新配置；当前未保存内容已保留，关闭设置后将载入新版本', 'err');
@@ -263,6 +274,8 @@
     // 持久化 revision 负责标识服务端配置版本。
     if (sequence < configAppliedSequence) return false;
     configAppliedSequence = sequence;
+    // A remote revision may rotate a saved key even when its presence flag is unchanged.
+    if (fromStream && loadedRevision !== configRevision) clearAiTest();
 
     if (fromStream && settingsDirty) {
       // 另一个标签页即使保存了完全相同的普通配置，服务端 revision 也会递增。
@@ -278,21 +291,32 @@
       return false;
     }
 
+    if ($('ai_base_url').value !== (c.ai_base_url || 'https://api.openai.com/v1')
+      || $('ai_model').value !== (c.ai_model || '')
+      || $('ai_translation_enabled').checked !== (c.ai_translation_enabled === true)
+      || loadedAiKeyPresent !== !!c.secrets?.hasAiApiKey
+      || $('clear_ai_api_key').checked) clearAiTest();
     configRevision = loadedRevision;
     loadedConfigSignature = signature;
+    loadedAiKeyPresent = !!c.secrets?.hasAiApiKey;
     accountsCfg = c.accounts || [];
     $('collector-name').textContent = 'twscrape';
     if (c.runtime) { statusData.runtime = c.runtime; renderTop(); }
     $('tg_chat_id').value = c.tg_chat_id || '';
+    $('ai_translation_enabled').checked = c.ai_translation_enabled === true;
+    $('ai_base_url').value = c.ai_base_url || 'https://api.openai.com/v1';
+    $('ai_model').value = c.ai_model || '';
+    $('clear_ai_api_key').checked = false;
     // 远端刷新意味着本地未保存密钥已被明确放弃；不能只更新 placeholder 后把旧 value 留着，
     // 否则下一次保存会用旧密钥覆盖刚同步的新版本。
-    $('auth_token').value = ''; $('ct0').value = ''; $('tg_bot_token').value = '';
+    SECRET_FIELDS.forEach((id) => { $(id).value = ''; });
     const DOTS = '••••••••••••';
     $('auth_token').placeholder = c.secrets.hasAuthToken ? DOTS : '';
     $('ct0').placeholder = c.secrets.hasCt0 ? DOTS : '';
     $('tg_bot_token').placeholder = c.secrets.hasTgBotToken ? DOTS : '';
+    $('ai_api_key').placeholder = c.secrets.hasAiApiKey ? DOTS : '';
     renderAcctRows(accountsCfg);
-    ['auth_token', 'ct0', 'tg_bot_token'].forEach(refreshReveal);
+    SECRET_FIELDS.forEach(refreshReveal);
     if (!collectorOk) setCollectorInstallHint('warn', '⚠ 采集程序不完整。请管理员在应用目录运行 ', '，然后重新检查。');
     else setCollectorHint('', '采集器由服务器固定部署；点击“检查安装”确认环境。');
     settingsDirty = false;
@@ -333,21 +357,32 @@
     const runtime = st.runtime;
     const canCollect = runtime?.collectionEnabled === true;
     const canDeliver = runtime?.deliveryEnabled === true;
+    const canControl = canCollect && canDeliver;
     const pill = $('livepill'), txt = $('live-text');
-    $('runtime-notice').textContent = !runtime ? '正在读取运行模式…'
+    const notice = $('runtime-notice');
+    notice.textContent = !runtime ? '正在读取运行模式…'
       : !canCollect && !canDeliver ? '开发预览：X 采集与 Telegram 发送已关闭。'
       : !canDeliver ? '只读验证：可手动测试 X 采集；自动监控与 Telegram 发送已关闭。'
-        : '正式运行模式：twscrape 自动采集并向 Telegram 推送新推文。';
-    $('btn-test-collector').disabled = !canCollect;
-    $('btn-test-tg').disabled = !canDeliver;
+        : st.controlPending ? '暂停/恢复设置未确认；监控保持停止。请重试暂停或恢复，或重新保存配置。'
+          : '';
+    notice.classList.toggle('hidden', !notice.textContent);
+    $('btn-test-collector').disabled = !canCollect || !!testRequests.collector;
+    $('btn-test-tg').disabled = !canDeliver || !!testRequests.telegram;
+    renderAiTestControl();
     pill.className = 'livepill';
-    if (!canCollect) { pill.classList.add('off'); txt.textContent = runtime ? '开发预览' : '连接中…'; }
+    if (panelActive && (statusUnavailable || !statusIsFresh(lastStatusAt))) {
+      pill.classList.add('off');
+      txt.textContent = statusUnavailable ? '状态连接中断' : lastStatusAt === null ? '连接中…' : '状态已过期，重连中';
+    }
+    else if (!canCollect) { pill.classList.add('off'); txt.textContent = runtime ? '开发预览' : '连接中…'; }
     else if (!canDeliver) { pill.classList.add('off'); txt.textContent = '只读验证'; }
-    else if (!st.running) { pill.classList.add('off'); txt.textContent = '未运行'; }
+    else if (st.controlPending) { pill.classList.add('paused'); txt.textContent = '已停止，等待确认'; }
     else if (st.paused) { pill.classList.add('paused'); txt.textContent = '已暂停'; }
+    else if (!st.running) { pill.classList.add('off'); txt.textContent = '未运行'; }
     else { txt.textContent = '运行中'; }
-    $('btn-pause').classList.toggle('hidden', !canCollect || !st.running || st.paused);
-    $('btn-resume').classList.toggle('hidden', !canCollect || !st.running || !st.paused);
+    $('btn-pause').classList.toggle('hidden', !canControl || (!st.controlPending && (!st.running || st.paused)));
+    $('btn-resume').classList.toggle('hidden', !canControl || (!st.controlPending && !st.paused));
+    $('btn-pause').textContent = st.controlPending ? '⏸ 重新暂停' : '⏸ 暂停';
   }
   // 从未检查过的账号返回 null（区别于 rem=0，避免误显示"0:00 / 满格"）
   function nextCheckSec(cfgAcct) {
@@ -482,6 +517,7 @@
   // 每秒只更新时间派生的文字/进度，不重建 DOM
   function tickTimes() {
     if ($('dash').classList.contains('hidden')) return;
+    renderTop();
     renderStats();
     [].forEach.call(document.querySelectorAll('#cards .card'), (card) => {
       const a = accountsCfg.find((x) => x.username === card.dataset.user);
@@ -532,6 +568,18 @@
   let streamProbeInFlight = false;
   let streamHealthy = false;
   let streamVersion = 0;
+  const STATUS_FRESH_MS = 30000;
+  const statusClock = () => typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now() : Date.now();
+  let lastStreamStatusAt = null;
+  let lastStatusAt = null;
+  let statusUnavailable = false;
+  function statusIsFresh(at) {
+    if (at === null) return false;
+    const age = statusClock() - at;
+    // 单调时间不受系统校时影响；旧环境回退墙上时间时，负年龄也必须重新确认状态。
+    return Number.isFinite(age) && age >= 0 && age < STATUS_FRESH_MS;
+  }
   let pollTimer = null;
   let pollRequest = null;
   let pollTimeout = null;
@@ -540,8 +588,21 @@
     panelGeneration++;
     streamHealthy = false;
     streamVersion++;
+    lastStreamStatusAt = null;
+    lastStatusAt = null;
+    statusUnavailable = false;
     configReloadInFlight = false;
     configReloadRequested = false;
+    configSaveInFlight = false;
+    clearAiTest();
+    setConfigEditorDisabled(false);
+    for (const kind of Object.keys(testRequests)) {
+      const request = testRequests[kind];
+      if (!request) continue;
+      request.controller.abort();
+      request.button.textContent = request.label;
+      testRequests[kind] = null;
+    }
     clearTimeout(pollTimer); pollTimer = null;
     clearTimeout(pollTimeout); pollTimeout = null;
     clearTimeout(streamRetryTimer); streamRetryTimer = null;
@@ -550,6 +611,8 @@
     if (es) es.close();
     es = null;
     streamRetryMs = 1000;
+    SECRET_FIELDS.forEach((id) => { $(id).value = ''; refreshReveal(id); });
+    $('clear_ai_api_key').checked = false;
   }
   function schedulePoll() {
     if (!panelActive || pollTimer) return;
@@ -557,6 +620,8 @@
   }
   function applyStatus(next, syncConfig) {
     if (!next || typeof next !== 'object' || Array.isArray(next)) return;
+    lastStatusAt = statusClock();
+    statusUnavailable = false;
     statusData = { ...next, accounts: next.accounts || {} };
     const nextRevision = Number.isSafeInteger(statusData.configRevision) ? statusData.configRevision : null;
     if (syncConfig && configRevision != null && nextRevision != null && nextRevision !== configRevision) reloadConfigFromStream(nextRevision);
@@ -564,7 +629,10 @@
   }
   async function pollPanel() {
     if (!panelActive || pollRequest) return;
-    if (streamHealthy) { schedulePoll(); return; }
+    // SSE 的注释心跳对脚本不可见。曾收到状态帧不能永久证明连接可用，静默后用 HTTP 重新核对。
+    if (streamHealthy && statusIsFresh(lastStreamStatusAt)) { schedulePoll(); return; }
+    streamHealthy = false;
+    renderTop();
     const generation = panelGeneration, version = streamVersion;
     const controller = new AbortController();
     pollRequest = controller;
@@ -577,10 +645,17 @@
       ]);
       // SSE 可能在 HTTP 请求期间恢复；旧快照不能覆盖较新的流事件或新登录会话。
       if (!panelActive || generation !== panelGeneration || version !== streamVersion || streamHealthy) return;
-      if (snapshot.status) applyStatus({ ...snapshot.status, runtime: snapshot.runtime || snapshot.status.runtime, paused: snapshot.paused ?? snapshot.status.paused }, true);
+      if (!snapshot.status || typeof snapshot.status !== 'object' || Array.isArray(snapshot.status)) throw new Error('状态响应无效');
+      applyStatus({ ...snapshot.status, runtime: snapshot.runtime || snapshot.status.runtime, paused: snapshot.paused ?? snapshot.status.paused }, true);
       // 服务端返回 200 条，界面只保留最近 60 条；限制回放避免挤出日志去重窗口。
       if (Array.isArray(recent.logs)) recent.logs.slice(-60).forEach(pushFeed);
-    } catch (_) { /* 短暂网络失败由下一轮重试；401 已停止更新并返回登录页。 */ }
+    } catch (_) {
+      // 旧请求失败不能遮盖已恢复的 SSE 或新登录会话；当前 HTTP 失败不得继续展示旧的“运行中”。
+      if (panelActive && generation === panelGeneration && version === streamVersion && !streamHealthy) {
+        statusUnavailable = true;
+        renderTop();
+      }
+    }
     finally {
       // 某一个请求失败时也取消另一个，避免下一轮与残留 HTTP 请求重叠。
       controller.abort();
@@ -608,8 +683,8 @@
     try { source = new EventSource('api/stream'); }
     catch (_) {
       es = null;
-      const pill = $('livepill'), txt = $('live-text');
-      if (pill && txt) { pill.className = 'livepill off'; txt.textContent = '重连中'; }
+      // SSE 不可用仍可能有正常 HTTP 刷新；保持最近状态的新鲜度及 HTTP 错误判定。
+      renderTop();
       scheduleStreamReconnect();
       return;
     }
@@ -624,6 +699,7 @@
         const next = JSON.parse(e.data);
         if (!next || typeof next !== 'object' || Array.isArray(next)) return;
         streamHealthy = true;
+        lastStreamStatusAt = statusClock();
         streamVersion++;
         applyStatus(next, true);
       } catch (_) {}
@@ -633,8 +709,7 @@
       if (!panelActive || es !== source) return;
       streamHealthy = false;
       schedulePoll();
-      const pill = $('livepill'), txt = $('live-text');
-      if (pill && txt) { pill.className = 'livepill off'; txt.textContent = '重连中'; }
+      renderTop();
       // 网络断开由 EventSource 自行重连；永久关闭还可能是 SSE 满载/反代错误，不能一律刷新页面。
       if (source.readyState !== EventSource.CLOSED || streamProbeInFlight) return;
       streamProbeInFlight = true;
@@ -691,8 +766,10 @@
 
   // 账号编辑行
   function makeAcctRow(a) {
+    const existing = !!a?.username;
     a = a || { username: '', fetch_count: 10, check_interval: 300 };
     const row = el('div', 'acct-row');
+    row.dataset.existing = existing ? 'true' : 'false';
     const name = document.createElement('input');
     name.type = 'text'; name.className = 'col-name'; name.placeholder = 'elonmusk'; name.value = a.username || ''; name.maxLength = 16;
     name.autocomplete = 'off'; name.spellcheck = false; name.setAttribute('autocapitalize', 'off'); name.setAttribute('aria-label', '用户名'); name.setAttribute('data-role', 'name');
@@ -702,7 +779,8 @@
     iv.type = 'number'; iv.className = 'col-num'; iv.min = 30; iv.max = 3600; iv.step = 1; iv.value = a.check_interval || 300; iv.setAttribute('aria-label', '检查频率（秒）'); iv.setAttribute('data-role', 'iv');
     const del = document.createElement('button');
     del.className = 'btn-x col-x'; del.type = 'button'; del.textContent = '✕';
-    del.setAttribute('aria-label', '删除此账号行');
+    del.setAttribute('aria-label', '删除此账号行，保存后会移除其待发送消息');
+    del.title = '删除此账号行，保存后会移除其待发送消息';
     del.onclick = () => { row.remove(); settingsDirty = true; };
     row.append(name, fc, iv, del);
     return row;
@@ -715,7 +793,10 @@
     const out = [];
     $('acct-list').querySelectorAll('.acct-row').forEach((r) => {
       const u = r.querySelector('[data-role=name]').value.trim().replace(/^@/, '');
-      if (!u) return;
+      if (!u) {
+        if (r.dataset.existing === 'true') throw new Error('已有账号的用户名不能为空；如需删除，请点击该行的删除按钮');
+        return; // An untouched new row is only an editor placeholder.
+      }
       out.push({
         username: u,
         fetch_count: parseInt(r.querySelector('[data-role=fc]').value, 10) || 10,
@@ -729,7 +810,8 @@
   };
   $('settings').addEventListener('input', (e) => {
     if (!e.target || !e.target.matches('input')) return;
-    if (e.target.closest('#acct-list') || ['tg_chat_id', 'auth_token', 'ct0', 'tg_bot_token'].includes(e.target.id)) {
+    if (AI_FIELDS.includes(e.target.id)) clearAiTest();
+    if (e.target.closest('#acct-list') || ['tg_chat_id', ...SECRET_FIELDS, ...AI_FIELDS].includes(e.target.id)) {
       settingsDirty = true;
     }
   });
@@ -766,75 +848,160 @@
     input.addEventListener('input', sync);
     input._revealSync = sync; wrap.appendChild(btn); sync();
   }
-  ['auth_token', 'ct0', 'tg_bot_token', 'old_pw', 'new_pw', 'new_pw2'].forEach(addReveal);
+  [...SECRET_FIELDS, 'old_pw', 'new_pw', 'new_pw2'].forEach(addReveal);
   function refreshReveal(id) { const e2 = $(id); if (e2 && e2._revealSync) e2._revealSync(); }
 
   function collectPayload() {
-    const p = { tg_chat_id: $('tg_chat_id').value.trim(), accounts: collectAccounts() };
+    const p = { tg_chat_id: $('tg_chat_id').value.trim(), accounts: collectAccounts(),
+      ai_translation_enabled: $('ai_translation_enabled').checked,
+      ai_base_url: $('ai_base_url').value.trim(), ai_model: $('ai_model').value.trim(),
+      clear_ai_api_key: $('clear_ai_api_key').checked };
     if (Number.isSafeInteger(configRevision)) p.config_revision = configRevision;
     const at = $('auth_token').value.trim(), ct = $('ct0').value.trim(), bt = $('tg_bot_token').value.trim();
     if (at) p.auth_token = at; if (ct) p.ct0 = ct; if (bt) p.tg_bot_token = bt;
+    if ($('ai_api_key').value.trim()) p.ai_api_key = $('ai_api_key').value.trim();
     return p;
   }
   function setConfigEditorDisabled(disabled) {
-    const selector = '#tg_chat_id, #auth_token, #ct0, #tg_bot_token, #acct-list input, #acct-list button, #btn-add-acct, #btn-detect-collector, #btn-save';
+    const selector = '#tg_chat_id, #auth_token, #ct0, #tg_bot_token, #ai_translation_enabled, #ai_base_url, #ai_model, #ai_api_key, #clear_ai_api_key, #acct-list input, #acct-list button, #btn-add-acct, #btn-detect-collector, #btn-save';
     $('settings').querySelectorAll(selector).forEach((control) => { control.disabled = disabled; });
     $('btn-detect-collector').disabled = disabled || collectorDetectInFlight;
+    renderAiTestControl();
   }
-  async function saveConfig() {
+  async function saveConfig(request = {}) {
     if (configSaveInFlight) throw new Error('配置正在保存，请稍候');
     if (remoteConfigPending) throw new Error('配置已在其他标签页更新，请先关闭设置载入新版本');
+    const generation = panelGeneration;
     configSaveInFlight = true;
     setConfigEditorDisabled(true);
     try {
-      const r = await api('POST', 'api/config', collectPayload());
-      $('auth_token').value = ''; $('ct0').value = ''; $('tg_bot_token').value = '';
-      ['auth_token', 'ct0', 'tg_bot_token'].forEach(refreshReveal);
+      const r = await api('POST', 'api/config', collectPayload(), { generation, signal: request.signal });
+      SECRET_FIELDS.forEach((id) => { $(id).value = ''; });
+      SECRET_FIELDS.forEach(refreshReveal);
       await loadConfig();
+      if (!panelActive || generation !== panelGeneration) throw new Error('已忽略旧会话响应');
       renderAll();
       return r;
     } catch (e) {
-      if (e.status === 409) noteRemoteConfigConflict();
+      if (generation === panelGeneration && e.status === 409) noteRemoteConfigConflict();
       throw e;
     } finally {
-      configSaveInFlight = false;
-      setConfigEditorDisabled(false);
-      // 保存等待期间允许关闭抽屉。若 409 冲突在关闭后才返回，closeSettings() 当时还看不到
-      // remoteConfigPending；这里必须主动追赶远端版本，不能让隐藏表单和账号卡片长期停在旧配置。
-      const closedConflict = remoteConfigPending && $('settings').classList.contains('hidden');
-      if (closedConflict) settingsDirty = false;
-      if (configReloadRequested || closedConflict) {
-        reloadConfigFromStream(remoteConfigRevision);
+      if (generation === panelGeneration) {
+        configSaveInFlight = false;
+        setConfigEditorDisabled(false);
+        // 保存等待期间允许关闭抽屉。若 409 冲突在关闭后才返回，closeSettings() 当时还看不到
+        // remoteConfigPending；这里必须主动追赶远端版本，不能让隐藏表单和账号卡片长期停在旧配置。
+        const closedConflict = remoteConfigPending && $('settings').classList.contains('hidden');
+        if (closedConflict) settingsDirty = false;
+        if (configReloadRequested || closedConflict) {
+          reloadConfigFromStream(remoteConfigRevision);
+        }
       }
     }
   }
-  async function saveDraftForTest() {
+  async function saveDraftForTest(request) {
     if (remoteConfigPending) throw new Error('配置已在其他标签页更新，请先关闭设置载入新版本');
-    return settingsDirty ? saveConfig() : { warnings: [] };
+    return settingsDirty ? saveConfig(request) : { warnings: [] };
   }
   $('btn-save').onclick = async () => {
     if (!settingsDirty) { toast('配置没有变化', 'ok'); return; }
-    try { const r = await saveConfig(); toast(r.warnings && r.warnings.length ? '⚠ ' + r.warnings.join('；') : '✅ 配置已保存', r.warnings && r.warnings.length ? 'err' : 'ok'); }
-    catch (e) { toast(e.message, 'err'); }
+    const generation = panelGeneration;
+    try {
+      const r = await saveConfig();
+      if (panelActive && generation === panelGeneration) toast(r.warnings && r.warnings.length ? '⚠ ' + r.warnings.join('；') : '✅ 配置已保存', r.warnings && r.warnings.length ? 'err' : 'ok');
+    }
+    catch (e) { if (panelActive && generation === panelGeneration) toast(e.message, 'err'); }
   };
-  $('btn-test-collector').onclick = async () => {
-    const btn = $('btn-test-collector'); btn.disabled = true; const old = btn.textContent; btn.textContent = '测试中…';
+  async function runConfigTest(kind, buttonId) {
+    const allowed = () => kind === 'collector' ? statusData.runtime?.collectionEnabled === true : statusData.runtime?.deliveryEnabled === true;
+    if (!panelActive || !allowed() || testRequests[kind]) return;
+    const button = $(buttonId);
+    const request = { generation: panelGeneration, controller: new AbortController(), button, label: button.textContent };
+    const current = () => panelActive && request.generation === panelGeneration && testRequests[kind] === request;
+    testRequests[kind] = request;
+    button.disabled = true;
+    button.textContent = '测试中…';
     try {
       // 无改动时不要做一次空保存：空保存也会推进 revision 并取消 worker 在途任务。
-      const saved = await saveDraftForTest();
+      const options = { generation: request.generation, signal: request.controller.signal };
+      const saved = await saveDraftForTest(options);
+      if (!current() || !allowed()) return;
       if (saved.warnings && saved.warnings.length) throw new Error('配置未完全保存：' + saved.warnings.join('；'));
-      const r = await api('POST', 'api/test/collector', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err');
+      const r = await api('POST', 'api/test/' + kind, {}, options);
+      if (current()) toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err');
     }
-    catch (e) { toast(e.message, 'err'); } finally { btn.textContent = old; renderTop(); }
-  };
-  $('btn-test-tg').onclick = async () => {
-    const btn = $('btn-test-tg'); btn.disabled = true; const old = btn.textContent; btn.textContent = '测试中…';
+    catch (e) { if (current()) toast(e.message, 'err'); }
+    finally {
+      if (current()) {
+        testRequests[kind] = null;
+        button.textContent = request.label;
+        renderTop();
+      }
+    }
+  }
+  $('btn-test-collector').onclick = () => runConfigTest('collector', 'btn-test-collector');
+  $('btn-test-tg').onclick = () => runConfigTest('telegram', 'btn-test-tg');
+
+  function renderAiTestControl() {
+    const allowed = statusData.runtime?.translationEnabled === true;
+    const button = $('btn-test-ai');
+    button.disabled = !panelActive || !allowed || configSaveInFlight || !!aiTestRequest;
+    button.textContent = aiTestRequest ? '发送中…' : '发送 hi 测试';
+    button.title = allowed ? '' : '仅在 live 模式下允许请求 AI';
+  }
+  function showAiTestResult(message, kind) {
+    const result = $('ai-test-result');
+    result.textContent = message;
+    result.className = 'ai-test-result' + (kind ? ' ' + kind : '');
+    result.setAttribute('aria-busy', String(kind === 'pending'));
+  }
+  function clearAiTest() {
+    if (aiTestRequest) {
+      aiTestRequest.controller.abort();
+      clearTimeout(aiTestRequest.timeout);
+      aiTestRequest = null;
+    }
+    const result = $('ai-test-result');
+    result.textContent = '';
+    result.className = 'ai-test-result hidden';
+    result.setAttribute('aria-busy', 'false');
+    renderAiTestControl();
+  }
+  $('btn-test-ai').onclick = async () => {
+    if (!panelActive || statusData.runtime?.translationEnabled !== true || configSaveInFlight || aiTestRequest) return;
+    // This endpoint tests only the AI draft. It must never save unrelated settings or enable translation.
+    const body = {
+      config_revision: configRevision,
+      ai_base_url: $('ai_base_url').value.trim(),
+      ai_model: $('ai_model').value.trim(),
+      clear_ai_api_key: $('clear_ai_api_key').checked,
+    };
+    if ($('ai_api_key').value.trim()) body.ai_api_key = $('ai_api_key').value.trim();
+    if (!body.ai_model) { showAiTestResult('测试失败：请先填写模型名称', 'err'); return; }
+    const request = { generation: panelGeneration, controller: new AbortController(), timeout: null };
+    const current = () => panelActive && request.generation === panelGeneration && aiTestRequest === request;
+    aiTestRequest = request;
+    renderAiTestControl();
+    showAiTestResult('正在发送 hi，等待 AI 回复…', 'pending');
+    request.timeout = setTimeout(() => {
+      if (!current()) return;
+      request.controller.abort();
+      aiTestRequest = null;
+      showAiTestResult('测试失败：等待 AI 回复超时，请稍后重试', 'err');
+      renderAiTestControl();
+    }, 20000);
     try {
-      const saved = await saveDraftForTest();
-      if (saved.warnings && saved.warnings.length) throw new Error('配置未完全保存：' + saved.warnings.join('；'));
-      const r = await api('POST', 'api/test/telegram', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err');
+      const r = await api('POST', 'api/test/ai', body, { generation: request.generation, signal: request.controller.signal });
+      if (!current()) return;
+      if (!r.ok) { showAiTestResult('测试失败：' + (r.message || '未取得有效回复'), 'err'); return; }
+      const timing = Number.isFinite(r.elapsedMs) && r.elapsedMs >= 0 ? '（' + Math.round(r.elapsedMs) + ' 毫秒）' : '';
+      showAiTestResult('测试成功' + timing + '\nAI 回复：\n' + r.reply, 'ok');
+    } catch (e) {
+      if (current()) showAiTestResult('测试失败：' + e.message, 'err');
+    } finally {
+      clearTimeout(request.timeout);
+      if (current()) { aiTestRequest = null; renderAiTestControl(); }
     }
-    catch (e) { toast(e.message, 'err'); } finally { btn.textContent = old; renderTop(); }
   };
 
   let controlInFlight = false;
@@ -845,8 +1012,17 @@
     try {
       const r = await api('POST', 'api/control', { action });
       statusData.paused = !!r.paused;
+      statusData.controlPending = false;
       renderTop();
-    } catch (e) { toast(e.message, 'err'); }
+    } catch (e) {
+      if (e.controlPending) {
+        statusData.paused = true;
+        statusData.controlPending = true;
+        statusData.running = false;
+        renderTop();
+      }
+      toast(e.message, 'err');
+    }
     finally { controlInFlight = false; $('btn-pause').disabled = false; $('btn-resume').disabled = false; }
   }
   $('btn-pause').onclick = () => setPaused('pause');

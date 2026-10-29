@@ -168,6 +168,7 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b.OP_UserTweets, args[1])
         self.assertEqual(json.loads(opts["params"]["variables"])["cursor"], "A+B==")
         self.assertEqual(json.loads(opts["params"]["variables"])["userId"], "9007199254740993")
+        self.assertIs(json.loads(opts["params"]["variables"])["includePromotedContent"], False)
 
     async def test_user_uses_pinned_operation_and_features(self):
         await self.initialize()

@@ -1,40 +1,29 @@
-# 第二代工作交接
+# 维护交接
 
-更新：2026-10-23，当前开发版本 `0.1.0-beta.2`。
+更新：2026-10-29。当前源码版本 `0.1.0-beta.3`，汇总已上线的可靠性修复、非中文翻译、hi 测试、资源缓存和 UI 调整。发布入口：[v0.1.0-beta.3](https://github.com/xxvcc/Tweet-Watcher-v2/releases/tag/v0.1.0-beta.3)；源码标签与 Release 对应。
 
-用户授权在独立 v2 目录完整开发并充分测试，可直接使用第一代现有 X Cookie 做验证。没有要求接管生产发送或发送真实 Telegram 测试消息；本轮不执行这些操作。
+## 本机运行
 
-## 目录
+| 项目 | 当前状态 |
+|---|---|
+| 开发仓库 | `/www/tweet-watcher-v2`，远程 `xxvcc/Tweet-Watcher-v2`，分支 `main` |
+| v2 正式服务 | `tweet-watcher-v2.service`，独立用户 `tweet-watcher-v2`，live，监听 `127.0.0.1:8789` |
+| 正式代码 | `/opt/tweet-watcher-v2/current` → `releases/20261029-e3945ba4427d` |
+| 私有状态 | `/var/lib/tweet-watcher-v2`，目录 0700、文件 0600 |
+| v1 | `tweet-watcher.service` 已暂停、停止并禁用；不得同时恢复发送 |
+| 旧预览 | `127.0.0.1:8788`，read-only，不参与正式发送 |
 
-- v2：`/www/tweet-watcher-v2` → `https://github.com/xxvcc/Tweet-Watcher-v2`
-- v1 生产：`/www/tweet-watcher`，服务 `tweet-watcher.service`
-- v1 开发：`/www/tweet-watcher-v1-dev`
-- VS Code 多目录工作区：`/www/tweet-watcher-development.code-workspace`
+正式代码是按文件哈希固定的独立快照，不从开发工作区直接运行。发布版本号和文档整理不会自动替换生产快照；已有功能的线上验证见[验证摘要](VERIFICATION.md)。AI 初次交接时关闭，随后用户已配置并完成真实测试；实际开关与配置以面板为准。
 
-源码从第一代 v3.5.0 派生，保留历史和 MIT。v2 仅保留自己的 origin remote，不与旧版共享可写 Git 对象或运行数据。
+## 维护约定
 
-## 已实现
+- 修改前阅读项目 README、[开发指南](DEVELOPMENT.md)和本文件，保留已有授权、决定与验收边界。
+- 用户已授权完整生产交接及本轮发布；同一范围内不重复询问。真实网络测试、状态迁移和服务变更仍须有对应任务范围。
+- 代码、运行状态、凭据和依赖保持隔离；生产数据、备份及认证材料不得进入开发仓库。不要输出密钥或未脱敏响应。
+- 功能变更先完成对应回归和浏览器检查，部署使用独立快照、私有备份并保留旧代码；状态回退按[迁移指南](MIGRATION.md)执行。
+- 修改公共静态资源会自动生成新的内容哈希地址；缓存验证应覆盖保留旧浏览器缓存的升级场景。
+- 当前文档保持简洁；历史审计、测试与部署记录统一进入 [archive](archive/README.md)。
 
-Python 桥接固定 twscrape 签名/操作源码和 wheel 哈希，Node 完成严格整页解析、受限翻页与私有证据持久化。真实 Cookie 只读验证首轮 20 条、追赶 39 条 / 2 页，水位覆盖成功。没有把 Cookie 写入仓库，也未导入 Telegram 凭据。
+## 下一步
 
-面板、调度和持久 outbox 已选择新采集器；字符串 ID、引用/回复/转发/编辑关系及长正文保留。默认 development 全部禁外部操作；read-only 只手动采集，关闭调度和发送；live 显式开启完整流程。twscrape 是唯一采集器。旧 Bird 文件/依赖、运行模式、配置字段、API 别名、独有测试、部署模板和文档副本已清理。
-
-完整测试、浏览器证据和具体限制记录在 [VERIFICATION.md](VERIFICATION.md)。开发说明以 [DEVELOPMENT.md](DEVELOPMENT.md) 为准。V2_DEVELOPMENT_PLAN.md 记录当前结构和后续范围；研究目录保留脱敏的历史选型证据，不参与应用运行。
-
-## 临时预览
-
-临时 `tweet-watcher-v2-preview.service` 在 `127.0.0.1:8788` 提供只读面板，DynamicUser、独立 `/var/lib/tweet-watcher-v2-preview`，未导入生产凭据。首次设置令牌由用户自己在终端 `journalctl -u tweet-watcher-v2-preview -n 30 --no-pager` 查看。此临时预览不随主机重启自动恢复。
-
-当前通过 SSH 或 VS Code 转发 `127.0.0.1:8788`，在自己的浏览器访问 `http://localhost:8788`。
-
-2026-10-23 曾应用户要求添加 Cloudflare Quick Tunnel 临时公网 HTTPS 入口，经独立回环网关转发到面板；同日按用户要求撤除。临时 tunnel 和 gateway 服务、专用 cloudflared 程序、`/etc/tweet-watcher-v2-preview` 和预览服务的 `public.conf` 覆盖配置已移除，恢复本机访问。该操作未修改第一代域名、DNS、证书或主 Nginx 实例，也未删除 v2 私有实例数据。
-
-为兼容 Quick Tunnel 不支持 SSE 而增加的 HTTP 状态/日志刷新功能保留，正常部署仍可使用实时事件流。历史公网检查与浏览器测试证据见 [VERIFICATION.md](VERIFICATION.md)；它们不表示公网入口仍然开放。
-
-## 运行与待办
-
-第一代仍负责生产发送；v2 的生产迁移方案见 [MIGRATION.md](MIGRATION.md)，尚未执行。登录账号池、自动登录、长期历史补采、生产状态一键迁移不属于本版本实现。
-
-CI 模板在 `.github/ci-template.yml`，当前授权无法写 GitHub workflows；离线验证可完整本地运行。代码/远程/预览实际状态应使用 Git 和进程检查，不能仅据本文推断。
-
-保留原 VS Code 对话窗口，在另一个窗口打开 v2 或多目录工作区即可浏览代码。新聊天读取 AGENTS.md、本文与开发指南来恢复项目决策；文件夹切换不保证旧对话自动迁移。
+后续验证重点是自然新增推文的完整自动投递、长期运行和更复杂的多语言样本；多账号池与持续补采尚未实现，详见[架构与后续范围](ARCHITECTURE.md)。

@@ -13,6 +13,30 @@ function tweet(id, text = id) {
 function page(ids, nextCursor = 'next', extra = {}) {
   return { tweets: ids.map((id) => tweet(id)), nextCursor, exhausted: nextCursor === null, boundaryIds: ids, ...extra };
 }
+function rawPage(ids, cursor, { omitProfile = false, repostBody } = {}) {
+  const entries = ids.map((id) => {
+    const result = { __typename: 'Tweet', rest_id: id,
+      legacy: { id_str: id, user_id_str: '42', full_text: `Tweet ${id}`, created_at: 'Fri Oct 23 10:00:00 +0000 2026' } };
+    if (!omitProfile) result.core = { user_results: { result: { __typename: 'User', rest_id: '42',
+      core: { screen_name: 'example', name: 'Example Display Name' } } } };
+    if (repostBody !== undefined) {
+      result.legacy.full_text = 'RT @bob: Preview…';
+      result.legacy.retweeted_status_id_str = '90';
+      if (repostBody !== null) result.legacy.retweeted_status_result = {
+        result: { rest_id: '90', legacy: { full_text: repostBody } },
+      };
+    }
+    return { entryId: `tweet-${id}`, content: { itemContent: { itemType: 'TimelineTweet', tweet_results: { result } } } };
+  });
+  entries.push({ content: { cursorType: 'Bottom', value: cursor } });
+  return { data: { user: { result: { timeline: { timeline: { instructions: [
+    { type: 'TimelineAddEntries', entries },
+  ] } } } } } };
+}
+function parsedPage(ids, cursor, options) {
+  const { parseTimelinePage } = require('../lib/twscrape-timeline');
+  return parseTimelinePage(rawPage(ids, cursor, options), { username: 'example', userId: '42' });
+}
 function harness(pages, options = {}) {
   const requests = [], persisted = [];
   let closed = 0, parsed = 0, pageIndex = 0;
@@ -43,7 +67,7 @@ function harness(pages, options = {}) {
       parseTimelinePage(data) {
         parsed++;
         assert.equal(persisted.at(-1).data, data, 'persist full response before parsing boundaries');
-        if (options.parse) options.parse(data);
+        if (options.parse) return options.parse(data);
         return data;
       },
     },
@@ -123,6 +147,29 @@ test('later transport failure preserves earlier evidence without accepting parti
   assert.doesNotMatch(JSON.stringify(result), /SECRET ERROR/);
 });
 
+test('explicitly truncated bodies prevent both baseline and catchup checkpoints while preserving full page evidence', async () => {
+  const { parseTimelinePage } = require('../lib/twscrape-timeline');
+  for (const sinceId of [undefined, '100']) {
+    const incomplete = rawPage(['110', '100'], 'b');
+    const truncated = incomplete.data.user.result.timeline.timeline.instructions[0].entries[0].content.itemContent.tweet_results.result;
+    truncated.legacy.full_text = 'Preview only…';
+    truncated.legacy.truncated = true;
+    const h = harness([...(sinceId ? [rawPage(['120'], 'a')] : []), incomplete], {
+      parse: (data) => parseTimelinePage(data, { username: 'example', userId: '42' }),
+    });
+    const result = await h.fetchTweets({ ...input, sinceId });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'INVALID_PAGE');
+    assert.equal(result.tweets, null);
+    assert.equal(result.coverage.complete, false);
+    assert.equal(result.coverage.reachedSince, false);
+    assert.equal(result.coverage.newestId, undefined, 'no partial checkpoint escapes the failed round');
+    assert.equal(result.evidence.length, sinceId ? 3 : 2);
+    assert.equal(h.persisted.at(-1).data, incomplete);
+    assert.equal(h.closed, 1);
+  }
+});
+
 test('evidence persistence failure prevents parsing and further requests', async () => {
   const h = harness([page(['120'], 'a')], { persist(record) { if (record.page === 1) throw new Error('disk full'); } });
   const result = await h.fetchTweets(input);
@@ -162,6 +209,36 @@ test('identical overlap across pages and a pin seen again chronologically keep f
   assert.equal(result.ok, true);
   assert.equal(result.tweets.length, 3);
   assert.equal(result.tweets.find((item) => item.id === '120').is_pinned, false);
+});
+
+test('actual parser output merges omitted author profiles across pages while preserving coverage and known names', async () => {
+  for (const firstOmitted of [true, false]) {
+    const h = harness([parsedPage(['120'], 'a', { omitProfile: firstOmitted }),
+      parsedPage(['120', '100'], 'b', { omitProfile: !firstOmitted })]);
+    const result = await h.fetchTweets({ ...input, sinceId: '100' });
+    assert.equal(result.ok, true);
+    assert.equal(result.coverage.reachedSince, true);
+    assert.equal(result.coverage.pages, 2);
+    assert.equal(result.tweets.length, 2);
+    assert.equal(result.tweets.find((value) => value.id === '120').name, 'Example Display Name');
+  }
+});
+
+test('cross-page repost enrichment preserves the complete body and rejects conflicting known originals', async () => {
+  for (const firstBody of [null, 'Complete original']) {
+    const h = harness([parsedPage(['120'], 'a', { repostBody: firstBody }),
+      parsedPage(['120', '100'], 'b', { repostBody: firstBody === null ? 'Complete original' : null })]);
+    const result = await h.fetchTweets({ ...input, sinceId: '100' });
+    assert.equal(result.ok, true);
+    assert.equal(result.coverage.reachedSince, true);
+    assert.equal(result.tweets.find((value) => value.id === '120').text, 'RT @bob: Complete original');
+  }
+  const h = harness([parsedPage(['120'], 'a', { repostBody: 'Original body' }),
+    parsedPage(['120', '100'], 'b', { repostBody: 'Changed body' })]);
+  const result = await h.fetchTweets({ ...input, sinceId: '100' });
+  assert.equal(result.code, 'POST_CONFLICT');
+  assert.equal(result.tweets, null);
+  assert.equal(result.coverage.complete, false);
 });
 
 test('concurrent manual requests share a bounded single collector slot', async () => {

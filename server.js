@@ -9,12 +9,15 @@ const proxyAddr = require('proxy-addr');
 // deployment realip list. Never fetch or widen this trust boundary at runtime.
 const cloudflareAddress = proxyAddr.compile(require('./lib/cloudflare-ranges.json'));
 const cfgmod = require('./lib/config');
+const { DEFAULTS: AI_DEFAULTS, validBaseUrl, validModel } = require('./lib/translation-settings');
 const store = require('./lib/store');
 const auth = require('./lib/auth');
 const collector = require('./lib/twscrape');
+const translation = require('./lib/translation');
 const state = require('./lib/state');
 const worker = require('./lib/worker');
 const runtime = require('./lib/runtime');
+const { publicAssets } = require('./lib/public-assets');
 
 const PORT = process.env.PORT || 8788;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -320,14 +323,22 @@ app.post('/api/password', requireAuth, requireCsrf, wrap(async (req, res) => {
 }));
 
 // ===== 配置 =====
+function syncConfigRevision(cfg) {
+  // Recovery can finish during a read even when scheduling is disabled. Publish
+  // only the revision that is actually readable, never an attempted commit.
+  if (state.getStatus().configRevision !== cfg.revision) state.setStatus({ configRevision: cfg.revision });
+}
 app.get('/api/config', requireAuth, (req, res) => {
   const cfg = cfgmod.getConfig();
   const s = cfgmod.getSecrets();
+  syncConfigRevision(cfg);
   res.json({
     tg_chat_id: cfg.tg_chat_id, accounts: cfg.accounts,
+    ai_translation_enabled: cfg.ai_translation_enabled === true,
+    ai_base_url: cfg.ai_base_url ?? AI_DEFAULTS.ai_base_url, ai_model: cfg.ai_model ?? AI_DEFAULTS.ai_model,
     collector: { name: runtime.status().collector, fixed: true },
     runtime: runtime.status(), configRevision: cfg.revision,
-    secrets: { hasAuthToken: !!s.auth_token, hasCt0: !!s.ct0, hasTgBotToken: !!s.tg_bot_token },
+    secrets: { hasAuthToken: !!s.auth_token, hasCt0: !!s.ct0, hasTgBotToken: !!s.tg_bot_token, hasAiApiKey: !!s.ai_api_key },
   });
 });
 app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
@@ -349,14 +360,11 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   // 否则一个只改 tg_chat_id 的请求会把 accounts 静默清空。
   let accounts = cur.accounts;
   if (b.accounts !== undefined) {
-    if (!Array.isArray(b.accounts)) {
-      warnings.push('accounts 必须是数组，已保留原值');
-    } else {
-      accounts = cfgmod.normalizeAccounts(b.accounts);
-      if (accounts.length < b.accounts.length) {
-        warnings.push(`部分账号被忽略（非法用户名/重复/超出上限 ${cfgmod.LIMITS.MAX_ACCOUNTS}）`);
-      }
+    if (!cfgmod.validAccounts(b.accounts)) {
+      return res.status(400).json({ ok: false,
+        error: `账号列表无效：请检查用户名、重复账号、数量上限 ${cfgmod.LIMITS.MAX_ACCOUNTS} 及采集参数；配置未保存` });
     }
+    accounts = cfgmod.normalizeAccounts(b.accounts);
   }
   let tg_chat_id = cur.tg_chat_id;
   if (b.tg_chat_id !== undefined) {
@@ -370,6 +378,32 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   }
   const sec = cfgmod.getSecrets();
   const ns = { ...sec };
+  // AI fields are strict partial updates. A saved key belongs to its chosen
+  // provider; changing endpoints must never silently forward it elsewhere.
+  if ((b.ai_translation_enabled !== undefined && typeof b.ai_translation_enabled !== 'boolean')
+      || (b.clear_ai_api_key !== undefined && typeof b.clear_ai_api_key !== 'boolean')
+      || (b.ai_base_url !== undefined && !validBaseUrl(b.ai_base_url))
+      || (b.ai_model !== undefined && !validModel(b.ai_model))
+      || (b.ai_api_key !== undefined && (typeof b.ai_api_key !== 'string'
+        || Buffer.byteLength(b.ai_api_key, 'utf8') > 4096 || /[\r\n\0]/.test(b.ai_api_key)
+        || /[\s\x00-\x1f\x7f]/.test(b.ai_api_key.trim())))) {
+    return res.status(400).json({ ok: false, error: 'AI 翻译配置无效：请检查开关、HTTPS API 地址、模型和 API Key' });
+  }
+  const ai_translation_enabled = b.ai_translation_enabled ?? (cur.ai_translation_enabled === true);
+  const ai_base_url = b.ai_base_url ?? cur.ai_base_url ?? AI_DEFAULTS.ai_base_url;
+  const ai_model = b.ai_model ?? cur.ai_model ?? AI_DEFAULTS.ai_model;
+  const newAiKey = typeof b.ai_api_key === 'string' ? b.ai_api_key.trim() : '';
+  if (b.clear_ai_api_key && newAiKey) {
+    return res.status(400).json({ ok: false, error: '清除和设置 AI API Key 不能同时提交' });
+  }
+  if (sec.ai_api_key && ai_base_url !== (cur.ai_base_url ?? AI_DEFAULTS.ai_base_url)
+      && !newAiKey && !(b.clear_ai_api_key && !ai_translation_enabled)) {
+    return res.status(400).json({ ok: false, error: '更换 AI API 地址时请重新填写 API Key，或关闭翻译并清除已保存的 Key' });
+  }
+  ns.ai_api_key = b.clear_ai_api_key ? '' : (newAiKey || sec.ai_api_key || '');
+  if (ai_translation_enabled && (!ai_model || !ns.ai_api_key)) {
+    return res.status(400).json({ ok: false, error: '启用 AI 翻译需要填写模型和 API Key' });
+  }
   const updateSecret = (key, label) => {
     if (typeof b[key] !== 'string' || !b[key].trim()) return;
     const value = b[key].trim();
@@ -380,56 +414,50 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   updateSecret('ct0', 'ct0');
   updateSecret('tg_bot_token', 'Telegram Bot Token');
   const nextRevision = cfgmod.nextRevision(currentRevision);
-  const nextConfig = { tg_chat_id, paused: cur.paused, accounts, revision: nextRevision };
-  cfgmod.saveConfig(nextConfig);
+  const nextConfig = { tg_chat_id, paused: cur.paused, accounts, revision: nextRevision,
+    ai_translation_enabled, ai_base_url, ai_model };
   try {
-    cfgmod.saveSecrets(ns);
+    cfgmod.saveSettings(nextConfig, ns);
   } catch (e) {
-    // secrets 的原子写失败时旧文件仍在；把先写入的普通配置回滚，避免一次请求只提交一半。
-    let rollbackError = null;
-    try {
-      // 首次保存前 config.json 不存在。此时写回默认对象会把“未配置”错误地变成
-      // “已持久化的空配置”，并令 worker 按空账号列表清理已有发送状态。
-      if (cur.persisted === false) store.removeJSON('config.json');
-      else cfgmod.saveConfig(cur);
-    } catch (re) { rollbackError = re; }
-    let effectiveRevision = currentRevision;
-    if (rollbackError) {
-      effectiveRevision = nextRevision;
-      // 原子写语义下通常仍是前一份有效文件；若连读取也失败，保留已知的新版本并继续回传 partial 警告。
-      try { effectiveRevision = cfgmod.getConfig().revision; } catch (_) {}
-    }
-    worker.configChanged(effectiveRevision);
-    if (rollbackError) {
-      state.log('配置保存失败且回滚失败：普通配置可能已更新，敏感配置保持原值');
-      return res.status(500).json({ ok: false, partial: true, error: '配置仅部分保存，请重新载入核对' });
-    }
-    state.log('敏感配置保存失败，普通配置已回滚');
-    return res.status(500).json({ ok: false, error: '配置保存失败，已回滚' });
+    // Cancel old in-flight work even if the commit outcome is uncertain. Reads
+    // will finish the durable transaction or fail closed before using either file.
+    worker.configChanged(currentRevision);
+    state.log('配置提交未确认；恢复存储后请重新载入核对');
+    return res.status(500).json({ ok: false, error: '配置提交未确认，恢复存储后请重新载入核对；已保存的事务会自动完成' });
   }
   // worker 的 generation 负责取消旧任务；对外版本必须使用已落盘值。
-  worker.configChanged(nextRevision);
+  worker.configChanged(nextRevision, { paused: nextConfig.paused });
   // 回传服务端最终采用的值，便于前端核对被静默保留的字段
-  res.json({ ok: true, accounts, tg_chat_id, warnings });
+  res.json({ ok: true, accounts, tg_chat_id, ai_translation_enabled, ai_base_url, ai_model, warnings });
 });
 
 // ===== 状态 / 日志 / 控制 / 测试 =====
 app.get('/api/status', requireAuth, (req, res) => {
   const cfg = cfgmod.getConfig();
+  syncConfigRevision(cfg);
   const st = state.getStatus();
   const heartbeatAge = st.lastTickAt == null ? NaN : Date.now() - st.lastTickAt;
-  const healthy = st.running && Number.isFinite(heartbeatAge) && heartbeatAge >= 0 && heartbeatAge < 60000;
-  res.json({ status: st, paused: cfg.paused, accounts: cfg.accounts, healthy, runtime: runtime.status() });
+  const healthy = !st.controlPending && st.running && Number.isFinite(heartbeatAge) && heartbeatAge >= 0 && heartbeatAge < 60000;
+  res.json({ status: st, paused: st.controlPending ? true : cfg.paused, accounts: cfg.accounts, healthy, runtime: runtime.status() });
 });
 app.get('/api/logs', requireAuth, (req, res) => { res.json({ logs: state.getLogs(200) }); });
 
 app.post('/api/control', requireAuth, requireCsrf, (req, res) => {
   const action = req.body && req.body.action;
-  const cfg = cfgmod.getConfig();
-  if (action === 'pause') cfg.paused = true;
-  else if (action === 'resume') cfg.paused = false;
-  else return res.status(400).json({ ok: false, error: '未知操作' });
-  cfgmod.saveConfig(cfg);
+  if (action !== 'pause' && action !== 'resume') return res.status(400).json({ ok: false, error: '未知操作' });
+  // Cancel in-flight work before any read or write can fail. A failed control
+  // stays stopped across ticks until an explicit control/config save succeeds.
+  worker.setPaused(true, { hold: true });
+  let cfg;
+  try {
+    cfg = cfgmod.getConfig();
+    cfg.paused = action === 'pause';
+    cfgmod.saveConfig(cfg);
+  } catch (_) {
+    state.log('暂停/恢复设置未确认；当前进程保持停止，请恢复存储后重新保存配置或重试暂停/恢复');
+    return res.status(500).json({ ok: false, paused: true, controlPending: true,
+      error: '暂停/恢复设置未确认，当前进程已停止监控；请恢复存储后重新保存配置或重试暂停/恢复' });
+  }
   worker.setPaused(cfg.paused); // 即时生效，不必等下一 tick 读盘
   state.setStatus({ paused: cfg.paused });
   const blocked = runtime.blocked('scheduling');
@@ -451,6 +479,51 @@ app.post('/api/detect-collector', requireAuth, requireCsrf, wrap(async (req, res
 // test 端点：单飞，防止认证后并发派生大量子进程/出站请求（子进程风暴）
 let collectorTestInFlight = false;
 let tgTestInFlight = false;
+let aiTestInFlight = false;
+app.post('/api/test/ai', requireAuth, requireCsrf, wrap(async (req, res) => {
+  const failed = (status, code, message) => res.status(status).json({ ok: false, code, message });
+  if (runtime.blocked('translation')) return failed(403, 'RUNTIME_DISABLED', '当前运行模式禁止 AI 测试');
+  if (aiTestInFlight) return failed(429, 'TEST_IN_PROGRESS', '上一次 AI 测试仍在进行，请稍候');
+  const b = req.body;
+  const fields = new Set(['config_revision', 'ai_base_url', 'ai_model', 'ai_api_key', 'clear_ai_api_key']);
+  if (!b || typeof b !== 'object' || Array.isArray(b) || Object.keys(b).some((key) => !fields.has(key))) {
+    return failed(400, 'INVALID_CONFIG', 'AI 测试只接受 API 地址、模型、API Key 和配置版本');
+  }
+  if (b.config_revision === undefined) return failed(428, 'REVISION_REQUIRED', '缺少配置版本，请重新载入后再测试');
+  if (!cfgmod.validRevision(b.config_revision)) return failed(400, 'INVALID_REVISION', '配置版本无效');
+  const cur = cfgmod.getConfig();
+  if (b.config_revision !== cur.revision) {
+    return failed(409, 'CONFIG_CHANGED', '配置已被其他页面修改，请重新载入后再测试');
+  }
+  if (!validBaseUrl(b.ai_base_url) || !validModel(b.ai_model) || !b.ai_model
+      || (b.clear_ai_api_key !== undefined && typeof b.clear_ai_api_key !== 'boolean')
+      || (b.ai_api_key !== undefined && (typeof b.ai_api_key !== 'string' || !b.ai_api_key.isWellFormed()
+        || Buffer.byteLength(b.ai_api_key) > 4096 || /[\s\x00-\x1f\x7f]/.test(b.ai_api_key)))) {
+    return failed(400, 'INVALID_CONFIG', '请检查 HTTPS API 地址、模型和 API Key');
+  }
+  const newKey = b.ai_api_key || '';
+  if (b.clear_ai_api_key && newKey) {
+    return failed(400, 'INVALID_CONFIG', '清除和设置 AI API Key 不能同时提交');
+  }
+  // Draft testing never saves configuration. A stored key can only be reused
+  // for the exact endpoint the user last loaded; no implicit provider changes.
+  if (!newKey && b.ai_base_url !== (cur.ai_base_url ?? AI_DEFAULTS.ai_base_url)) {
+    return failed(400, 'KEY_REQUIRED', '更换 AI API 地址时请重新填写 API Key');
+  }
+  const apiKey = newKey || (b.clear_ai_api_key ? '' : cfgmod.getSecrets().ai_api_key || '');
+  if (!apiKey) return failed(400, 'KEY_REQUIRED', '请填写 API Key，或使用当前地址已保存的 Key');
+  const epoch = auth.sessionEpoch();
+  aiTestInFlight = true;
+  try {
+    const answer = await translation.testConnection({ ai_base_url: b.ai_base_url, ai_model: b.ai_model }, { ai_api_key: apiKey });
+    // A global logout, password change or expiry while the provider is pending
+    // must not disclose saved-key-associated output to the stale session.
+    if (auth.sessionEpoch() !== epoch || !auth.hasPassword() || !validSession(req)) {
+      return failed(401, 'AUTH_CHANGED', '认证状态已变化，请重新登录');
+    }
+    res.json(answer);
+  } finally { aiTestInFlight = false; }
+}));
 app.post('/api/test/collector', requireAuth, requireCsrf, wrap(async (req, res) => {
   const blocked = runtime.blocked('collection');
   if (blocked) return res.status(409).json(blocked);
@@ -547,7 +620,7 @@ app.get('/api/stream', requireAuth, (req, res) => {
 app.use('/api', (req, res) => res.status(404).json({ ok: false, error: '接口不存在' }));
 
 // ===== 静态面板 =====
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(publicAssets(path.join(__dirname, 'public')));
 // 面板没有客户端路由。未知页面返回 404，避免深路径错误解析相对静态资源。
 
 // ===== 统一错误处理：绝不回传堆栈/绝对路径 =====

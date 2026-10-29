@@ -130,12 +130,16 @@ test('panel entrypoint keeps assets relative for reverse-proxy subpaths', async 
   const response = await fetch(`${base}/`);
   const html = await response.text();
   assert.equal(response.status, 200);
-  const version = require('../package.json').version;
-  assert.ok(html.includes(`href="style.css?v=${version}"`));
-  assert.ok(html.includes(`src="app.js?v=${version}"`));
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  const versions = Object.fromEntries(['style.css', 'app.js'].map((file) => [file,
+    require('node:crypto').createHash('sha256').update(require('node:fs')
+      .readFileSync(require('node:path').join(__dirname, '../public', file))).digest('hex')]));
+  assert.ok(html.includes(`href="style.css?v=${versions['style.css']}"`));
+  assert.ok(html.includes(`src="app.js?v=${versions['app.js']}"`));
 
-  const script = await fetch(`${base}/app.js?v=${version}`);
+  const script = await fetch(`${base}/app.js?v=${versions['app.js']}`);
   assert.match(script.headers.get('content-type') || '', /javascript/);
+  assert.equal(script.headers.get('cache-control'), 'no-cache');
 });
 
 test('unknown frontend paths return 404 instead of an invalid asset-base fallback', async (t) => {
