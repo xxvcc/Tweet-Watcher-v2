@@ -243,8 +243,8 @@ test('complete long-form text and relationship IDs survive durable storage and r
   assert.equal(post.text, text);
   assert.deepEqual(post.relations, relations);
   const message = require('../lib/telegram').formatTweet(post, 'alice');
-  assert.ok(message.length <= 4096);
-  assert.match(message, /内容已截断/);
+  assert.ok(message.endsWith(text));
+  assert.doesNotMatch(message, /内容已截断/);
   const before = structuredClone(files.get('delivery_state.json'));
   assert.throws(() => restarted.capture('alice', tweets(102, 100, text), BINDING, null), { code: 'OUTBOX_FULL' });
   assert.deepEqual(files.get('delivery_state.json'), before);

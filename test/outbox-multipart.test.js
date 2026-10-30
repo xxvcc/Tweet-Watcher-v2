@@ -244,3 +244,83 @@ test('cross-source ledger outlives wall time while a quiet search can still disc
   quiet.acknowledge('alice', '6', []);
   assert.equal(files.get('delivery_state.json').delivered.some((entry) => entry.id === '5'), false);
 });
+
+test('caption plans survive reload and share their exact body and progress across sources', () => {
+  const { box, files, reload } = fixture();
+  const combined = [
+    { kind: 'album', caption: 'AI 中文翻译：\n你好 😀\n\n原文：\nHello <world> & friends', media: [
+      { type: 'photo', url: parts[1].url }, { type: 'photo', url: parts[1].url.replace('example', 'second') },
+    ] },
+    { kind: 'text', text: '引用正文' },
+  ];
+  for (const key of ['alice', source]) box.baseline(key, ['1']);
+  box.capture('alice', [tweet()], A, null, '2');
+  assert.deepEqual(box.prepareDelivery('alice', '2', combined), { version: 2, parts: combined, next: 0 });
+  assert.deepEqual(files.get('delivery_state.json').accounts.alice.pending[0].delivery.parts, combined);
+  box.acknowledgePart('alice', '2', 0);
+  box.capture(source, [tweet()], A, null, '2');
+  const restarted = reload();
+  for (const key of ['alice', source]) {
+    assert.deepEqual(restarted.get(key).pending[0].delivery, { version: 2, parts: combined, next: 1 });
+  }
+  assert.deepEqual(restarted.prepareDelivery(source, '2', parts), { version: 2, parts: combined, next: 1 }, 'never replan a partly sent caption');
+  restarted.acknowledgePart(source, '2', 1);
+  restarted.acknowledge(source, '2', []);
+  assert.equal(restarted.get('alice').pending.length, 0);
+  assert.equal(restarted.get(source).pending.length, 0);
+});
+
+test('long plans opt into version 2 without changing already frozen version 1 progress', () => {
+  const { box, files, reload } = fixture();
+  const long = Array.from({ length: 128 }, (_, index) => ({ kind: 'text', text: `segment ${index + 1}` }));
+  box.baseline('alice', ['1']);
+  box.capture('alice', [tweet(), tweet('3')], A, null, '3');
+  box.prepareDelivery('alice', '2', parts);
+  box.acknowledgePart('alice', '2', 0);
+  assert.deepEqual(box.prepareDelivery('alice', '2', long), { version: 1, parts, next: 1 });
+  assert.deepEqual(box.prepareDelivery('alice', '3', long), { version: 2, parts: long, next: 0 });
+  const restarted = reload();
+  assert.equal(restarted.get('alice').pending[1].delivery.parts.length, 128);
+  assert.equal(files.get('delivery_state.json').accounts.alice.pending[1].delivery.version, 2);
+  restarted.acknowledgePart('alice', '2', 1);
+  restarted.acknowledge('alice', '2', []);
+  for (let index = 0; index < long.length; index++) restarted.acknowledgePart('alice', '3', index);
+  restarted.acknowledge('alice', '3', []);
+  assert.equal(reload().get('alice').pending.length, 0);
+});
+
+test('tampered caption versions and cross-source captions are rejected with the original state retained', () => {
+  const { box, files, reload } = fixture();
+  for (const key of ['alice', source]) {
+    box.baseline(key, ['1']);
+    box.capture(key, [tweet()], A, null, '2');
+  }
+  box.prepareDelivery('alice', '2', [{ ...parts[1], caption: 'Complete body' }]);
+  const valid = structuredClone(files.get('delivery_state.json'));
+  for (const corrupt of [
+    (plan) => { plan.version = 1; },
+    (plan) => { plan.version = 3; },
+    (plan) => { plan.parts[0].caption = 'x'.repeat(1025); },
+    (plan) => { plan.parts[0].caption = 'different shared body'; },
+    (plan) => { plan.parts.push(...Array.from({ length: 128 }, () => ({ kind: 'text', text: 'extra' }))); },
+    (plan) => { plan.next = 2; },
+  ]) {
+    const doc = structuredClone(valid);
+    corrupt(doc.accounts.alice.pending[0].delivery);
+    files.set('delivery_state.json', doc);
+    assert.throws(reload, { code: 'DATA_CORRUPT' });
+    assert.deepEqual(files.get('delivery_state.json'), doc);
+  }
+});
+
+test('larger part budget still enforces the total durable byte limit before admitting a plan', () => {
+  const { box, files } = fixture();
+  box.baseline('alice', ['1']);
+  box.capture('alice', Array.from({ length: 60 }, (_, index) => ({ id: String(index + 2), text: 'x'.repeat(100000) })), A, null, '61');
+  const before = structuredClone(files.get('delivery_state.json'));
+  const large = Array.from({ length: 128 }, () => ({ kind: 'text', text: 'x'.repeat(4096) }));
+  assert.throws(() => box.prepareDelivery('alice', '2', large), { code: 'OUTBOX_FULL' });
+  assert.deepEqual(files.get('delivery_state.json'), before);
+  assert.equal(box.get('alice').pending[0].delivery, undefined);
+  assert.equal(box.ready(), true);
+});

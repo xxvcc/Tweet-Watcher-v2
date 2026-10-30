@@ -1,6 +1,6 @@
 # 架构与后续范围
 
-适用版本：`0.2.0-beta.1`，已于 2026-10-30 [部署到本机](archive/2026-10-30-upgrade.md)并发布 GitHub 预发布版本，当前发布与运行位置见[维护交接](SESSION_HANDOFF.md)；实际验证范围见 [VERIFICATION.md](VERIFICATION.md)，首次 v1 到 v2 切换过程见[归档](archive/2026-10-29-cutover.md)。
+适用版本：`0.2.0-beta.2`，已发布 GitHub 预发布版本，运行代码已于 2026-10-30 [部署到本机](archive/2026-10-30-telegram-upgrade.md)。运行快照保留原包版本，发布与运行对应关系见[维护交接](SESSION_HANDOFF.md)；实际验证范围见 [VERIFICATION.md](VERIFICATION.md)，首次 v1 到 v2 切换过程见[归档](archive/2026-10-29-cutover.md)。
 
 ## 项目边界
 

@@ -109,3 +109,42 @@ test('bounded thread metadata retains string identities, strips nesting and reje
   assert.throws(() => normalizeTweetContent({ thread: [{ ...entry, text: 'x'.repeat(12001) }] }));
   assert.throws(() => mergeTweetContent(normalized, { thread: [{ ...entry, text: 'edited' }] }), { code: 'TWEET_CONFLICT' });
 });
+
+test('delivery captions preserve complete Unicode text for native media and use the album top level', () => {
+  const caption = '中文 <b>原文</b> & translation\n' + '😀'.repeat(490);
+  assert.ok(caption.length <= 1024);
+  const plan = [
+    { kind: 'photo', url: photo, caption },
+    { kind: 'video', url: video, caption: '' },
+    { kind: 'animation', url: video, caption: '动图' },
+    { kind: 'album', media: [{ type: 'photo', url: photo }, { type: 'video', url: video }], caption },
+  ];
+  assert.deepEqual(normalizeDeliveryParts(plan), plan);
+  const boundary = { kind: 'photo', url: photo, caption: '😀'.repeat(512) };
+  assert.deepEqual(normalizeDeliveryParts([boundary]), [boundary]);
+  const legacy = [{ kind: 'text', text: 'original' }, { kind: 'photo', url: photo }];
+  assert.deepEqual(normalizeDeliveryParts(legacy, { version: 1 }), legacy);
+  assert.throws(() => normalizeDeliveryParts(plan, { version: 1 }));
+});
+
+test('invalid, misplaced and legacy captions fail closed instead of disappearing', () => {
+  for (const caption of [null, undefined, 42, {}, '\ud800', 'bad\0caption', 'x'.repeat(1025), 'a'.repeat(1023) + '😀']) {
+    assert.throws(() => normalizeDeliveryParts([{ kind: 'photo', url: photo, caption }]));
+  }
+  for (const part of [
+    { kind: 'text', text: '正文', caption: 'would be lost' },
+    { kind: 'document', url: photo, caption: 'unsupported media' },
+    { kind: 'album', media: [{ type: 'photo', url: photo, caption: 'wrong level' }, { type: 'video', url: video }] },
+  ]) assert.throws(() => normalizeDeliveryParts([part]));
+  for (const version of [0, 3, '2', null]) {
+    assert.throws(() => normalizeDeliveryParts([{ kind: 'text', text: 'hello' }], { version }));
+  }
+});
+
+test('long delivery plans have a bounded new-format budget while legacy readers keep their 24-part limit', () => {
+  const plan = Array.from({ length: 128 }, (_, index) => ({ kind: 'text', text: `part ${index + 1}` }));
+  assert.deepEqual(normalizeDeliveryParts(plan), plan);
+  assert.throws(() => normalizeDeliveryParts([...plan, plan[0]]));
+  assert.throws(() => normalizeDeliveryParts(plan.slice(0, 25), { version: 1 }));
+  assert.deepEqual(normalizeDeliveryParts(plan.slice(0, 24), { version: 1 }), plan.slice(0, 24));
+});

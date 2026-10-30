@@ -352,7 +352,7 @@ test('duplicate reposts merge optional body enrichment but reject changed known 
   rejects(page([entry(conflicting)]));
 });
 
-test('recovered long repost text survives queue serialization and reload before Telegram display truncation', () => {
+test('recovered long repost text survives queue serialization and reload for complete Telegram display', () => {
   const { createOutbox } = require('../lib/outbox');
   const { formatTweet } = require('../lib/telegram');
   const files = new Map();
@@ -372,9 +372,9 @@ test('recovered long repost text survives queue serialization and reload before 
   assert.equal(restored.relations.repostId, '200');
   assert.equal(restored.id, '300');
   const formatted = formatTweet(restored, 'alice');
-  assert.ok(formatted.length <= 4096);
+  assert.ok(formatted.endsWith(fullText));
   assert.match(formatted, /RT @bob: 字/);
-  assert.match(formatted, /内容已截断/);
+  assert.doesNotMatch(formatted, /内容已截断/);
 });
 
 test('unexpected promoted entries still reject the entire page without using an advertising boundary', () => {

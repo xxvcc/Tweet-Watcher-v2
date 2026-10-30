@@ -31,12 +31,6 @@ test('Telegram business error_code controls permanent and rate-limit classificat
   }
 });
 
-test('message truncation does not leave a dangling surrogate', () => {
-  const out = telegram.truncate('a'.repeat(9) + '😀tail', 10);
-  assert.notEqual(out.charCodeAt(9), 0xD83D);
-  assert.match(out, /内容已截断/);
-});
-
 test('translation formatting preserves original-only messages and includes both complete short texts', () => {
   const tweet = { text: 'Hello, world!', url: 'https://x.com/alice/status/1' };
   const original = '🐦 新推文 @alice\n\n发布时间：\nX链接：https://x.com/alice/status/1\n内容：\nHello, world!';
@@ -49,41 +43,63 @@ test('translation formatting preserves original-only messages and includes both 
   assert.equal(tweet.text, 'Hello, world!');
 });
 
-test('long bilingual messages reserve space for both texts without cutting emoji or exceeding Telegram limits', () => {
+test('long bilingual formatting retains all original and translated text before splitting', () => {
   for (const metadata of [
     { time: '', url: 'https://x.com/alice/status/1' },
     { time: 'x'.repeat(256), url: 'https://example.com/' + 'x'.repeat(2028) },
   ]) {
     const text = 'Original English 😀 '.repeat(5000);
-    const translation = '中文翻译😀'.repeat(5000);
+    const translation = '中文翻译😀'.repeat(2000);
     const message = telegram.formatTweet({ text, ...metadata }, 'alice', translation);
-    assert.ok(message.length <= 4096);
     assert.equal(message.isWellFormed(), true);
-    assert.ok(message.includes(metadata.url), 'valid complete link remains visible');
-    const translatedBody = message.split('\n\nAI 中文翻译：\n')[1].split('\n\n原文：\n')[0];
-    const originalBody = message.split('\n\n原文：\n')[1];
-    assert.ok(translatedBody.startsWith('中文翻译😀'));
-    assert.ok(originalBody.startsWith('Original English 😀 '));
-    assert.match(translatedBody, /内容已截断/);
-    assert.match(originalBody, /内容已截断/);
-    assert.ok(translatedBody.length > originalBody.length);
+    assert.ok(message.includes(metadata.url));
+    assert.ok(message.endsWith('\n\nAI 中文翻译：\n' + translation + '\n\n原文：\n' + text));
+    const parts = telegram.splitText(message);
+    assert.ok(parts.length > 24, 'the full original exceeds the old 24-part limit');
+    assert.equal(parts.map((part, index) => {
+      const prefix = `「${index + 1}/${parts.length}」\n`;
+      assert.ok(part.startsWith(prefix));
+      assert.ok(part.length <= 4096);
+      assert.equal(part.isWellFormed(), true);
+      return part.slice(prefix.length);
+    }).join(''), message);
   }
 });
 
-test('short original or translation releases its unused message space to the longer section', () => {
-  const longText = 'English 😀 '.repeat(1000);
-  const longTranslation = '中文😀'.repeat(1000);
-  const shortOriginal = telegram.formatTweet({ text: 'Hello!' }, 'alice', longTranslation);
-  assert.ok(shortOriginal.length <= 4096);
-  assert.equal(shortOriginal.isWellFormed(), true);
-  assert.ok(shortOriginal.endsWith('\n\n原文：\nHello!'));
-  assert.ok(shortOriginal.split('\n\nAI 中文翻译：\n')[1].split('\n\n原文：\n')[0].length > 3500);
-
-  const shortTranslation = telegram.formatTweet({ text: longText }, 'alice', '你好！');
-  assert.ok(shortTranslation.length <= 4096);
-  assert.equal(shortTranslation.isWellFormed(), true);
-  assert.ok(shortTranslation.includes('\n\nAI 中文翻译：\n你好！\n\n原文：\n'));
-  assert.ok(shortTranslation.split('\n\n原文：\n')[1].length > 3500);
+test('splitting preserves boundary text, paragraphs, Unicode graphemes and exact whitespace', () => {
+  const family = '👨‍👩‍👧‍👦';
+  const samples = [
+    'a'.repeat(4096), 'a'.repeat(4097), 'a'.repeat(4085) + '😀tail',
+    'a'.repeat(4085) + family + 'b'.repeat(500),
+    'a'.repeat(4085) + 'e\u0301' + 'b'.repeat(500),
+    'a'.repeat(4085) + '\r\n' + 'b'.repeat(500),
+    'a'.repeat(3300) + '\n\n' + 'b'.repeat(1300),
+    'a'.repeat(3200) + '\n\n' + 'b'.repeat(800) + '\n' + 'c'.repeat(500),
+    'a'.repeat(3300) + '\n' + 'b'.repeat(1300),
+    'a'.repeat(3300) + ' ' + 'b'.repeat(1300),
+    ' \n\t' + 'line 😀\r\n'.repeat(1000) + '  \n',
+    'a' + '\u0301'.repeat(9000), // one grapheme longer than a Telegram message
+  ];
+  for (const sample of samples) {
+    const parts = telegram.splitText(sample);
+    assert.equal(parts.map((part, index) => {
+      assert.ok(part.length <= 4096);
+      assert.ok(part.isWellFormed());
+      if (parts.length === 1) return part;
+      const prefix = `「${index + 1}/${parts.length}」\n`;
+      assert.ok(part.startsWith(prefix));
+      return part.slice(prefix.length);
+    }).join(''), sample);
+  }
+  assert.ok(telegram.splitText(samples[3])[1].slice('「2/2」\n'.length).startsWith(family));
+  assert.ok(telegram.splitText(samples[4])[1].slice('「2/2」\n'.length).startsWith('e\u0301'));
+  assert.ok(telegram.splitText(samples[5])[1].slice('「2/2」\n'.length).startsWith('\r\n'));
+  assert.ok(telegram.splitText(samples[6])[0].endsWith('\n\n'));
+  assert.ok(telegram.splitText(samples[7])[0].endsWith('\n\n'), 'paragraph preferred over later newline');
+  assert.ok(telegram.splitText(samples[8])[0].endsWith('\n'));
+  assert.ok(telegram.splitText(samples[9])[0].endsWith(' '));
+  assert.throws(() => telegram.splitText('a'.repeat(4096 * 129)), /超过限制/);
+  assert.throws(() => telegram.splitText('bad\ud800'), /正文无效/);
 });
 
 test('HTTP Retry-After survives a non-JSON Telegram 429 response', async () => {

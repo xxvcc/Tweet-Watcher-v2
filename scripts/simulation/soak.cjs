@@ -104,7 +104,7 @@ async function runSoak() {
       ];
       h.sources.get('user:' + username).unshift(tweet(id, username,
         { text: `Synthetic real-clock round ${round} from ${username}, item ${id}`, media }));
-      expected.push({ username, id, round, publishedAt, parts: ['text', username === 'alice' ? 'photo' : 'album'] });
+      expected.push({ username, id, round, publishedAt, parts: [username === 'alice' ? 'photo' : 'album'] });
     }
     publishedRounds = round; publications.push({ round, at: publishedAt, elapsedSeconds: (publishedAt - startedAt) / 1000 });
   }
@@ -137,12 +137,17 @@ async function runSoak() {
     assert.deepEqual({ x: count('x'), ai: count('ai'), telegram: count('telegram'), accepted: h.accepted.length }, pauseEvents,
       'paused scheduler must not start collection, translation or delivery');
     const accepted = h.accepted.map(partIdentity);
-    assert.equal(accepted.length, 40); assert.equal(new Set(accepted).size, accepted.length);
+    assert.equal(accepted.length, 20); assert.equal(new Set(accepted).size, accepted.length);
     const expectedParts = expected.flatMap((item) => item.parts.map((part) => `${item.id}:${part}`));
     assert.deepEqual(accepted.slice().sort(), expectedParts.slice().sort());
     const finalState = h.read('delivery_state.json');
     for (const item of expected) assert.equal(finalState.accounts[item.username].sent.filter((id) => id === item.id).length, 1);
-    assert.ok(injected429 && delayedAi); assert.equal(count('telegram'), 41); assert.equal(count('ai'), 20);
+    for (const call of h.accepted) {
+      const caption = call.method === 'sendMediaGroup' ? JSON.parse(call.fields.media)[0]?.caption : call.fields.caption;
+      assert.ok(caption?.includes('Synthetic real-clock round '), 'each short post must retain its body in the media caption');
+      assert.ok(caption.length <= 1024 && caption.isWellFormed());
+    }
+    assert.ok(injected429 && delayedAi); assert.equal(count('telegram'), 21); assert.equal(count('ai'), 20);
     const retry = h.events.find((event) => event.type === 'telegram' && event.seq > injected429.seq);
     assert.ok(retry.at - injected429.respondedAt >= 1900, 'Telegram retry_after must be respected by real timers');
     assert.ok(delayedAi.respondedAt - delayedAi.at >= 950, 'the slow AI response must use real elapsed time');

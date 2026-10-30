@@ -46,7 +46,9 @@ function providerPart(call) {
 function expectedParts(raw) {
   const id = raw.rest_id;
   const media = raw.legacy.extended_entities?.media || [];
-  const keys = [`${id}/text`];
+  // Generated stress bodies (including their optional translation) fit the
+  // caption limit, so a media post has one combined provider-visible effect.
+  const keys = media.length ? [] : [`${id}/text`];
   if (media.length > 1) {
     assert.ok(media.every((item) => item.type === 'photo'), 'stress albums contain two known photos');
     keys.push(`${id}/album/${hash(media.map((item) => ['photo', item.media_url_https]))}`);
@@ -114,7 +116,14 @@ function verifyDelivery({ posts, accepted, allowedDuplicates = new Map(), comple
     assert.ok(expected.has(key), `unexpected provider effect: ${key}`);
     counts.set(key, (counts.get(key) || 0) + 1);
     assert.ok(counts.get(key) <= 1 + (allowedDuplicates.get(key) || 0), `unexplained repeated provider effect: ${key}`);
-    if (call.method === 'sendMessage') assert.ok(call.fields.text.includes(posts.get(id).raw.legacy.full_text), 'delivered original body changed');
+    const body = call.method === 'sendMessage' ? call.fields.text
+      : call.method === 'sendMediaGroup' ? JSON.parse(call.fields.media)[0]?.caption : call.fields.caption;
+    assert.ok(body?.includes(posts.get(id).raw.legacy.full_text), 'delivered original body changed or media caption is missing');
+    assert.ok(body.includes('/status/' + id), 'body must belong to the same post as its media');
+    assert.ok(body.length <= (call.method === 'sendMessage' ? 4096 : 1024));
+    if (call.method === 'sendMediaGroup') {
+      assert.ok(JSON.parse(call.fields.media).slice(1).every((item) => item.caption === undefined), 'album must not duplicate its caption');
+    }
   }
   const missing = [...expected.keys()].filter((key) => !counts.has(key));
   if (complete) assert.deepEqual(missing.slice(0, 20), [], `${missing.length} expected provider effects are missing`);

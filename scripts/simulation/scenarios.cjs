@@ -26,8 +26,12 @@ async function scenario(t, options = {}) {
 }
 const checkpoint = (h, key = 'alice') => h.read('delivery_state.json').accounts[key].acquisitionWatermark;
 const pending = (h, key = 'alice') => h.read('delivery_state.json').accounts[key].pending;
-const mainTexts = (h, value) => h.accepted.filter((e) => e.method === 'sendMessage'
-  && e.fields.text?.includes('X链接：') && e.fields.text.includes('/status/' + value));
+function telegramText(call) {
+  if (call.method === 'sendMediaGroup') return JSON.parse(call.fields.media)[0]?.caption || '';
+  return call.fields.text || call.fields.caption || '';
+}
+const mainTexts = (h, value) => h.accepted.map(telegramText)
+  .filter((text) => text.includes('X链接：') && text.includes('/status/' + value));
 
 test('full TLS pipeline: sources, filters, non-Chinese translation, quote/article, native media and durable dedup', async (t) => {
   const accounts = [{ username: 'alice', fetch_count: 20, check_interval: 30, filters: { exclude: ['discard'] } },
@@ -52,8 +56,15 @@ test('full TLS pipeline: sources, filters, non-Chinese translation, quote/articl
   await h.tick();
   for (let n = 1; n <= 8; n++) assert.equal(mainTexts(h, id(n)).length, n === 6 ? 0 : 1, 'per-ID original delivery');
   for (const method of ['sendPhoto', 'sendMediaGroup', 'sendVideo', 'sendAnimation']) assert.equal(h.accepted.filter((e) => e.method === method).length, 1, method);
-  assert.match(mainTexts(h, id(1))[0].fields.text, /AI 中文翻译：[\s\S]*原文：[\s\S]*English photo/);
-  assert.doesNotMatch(mainTexts(h, id(5))[0].fields.text, /AI 中文翻译/);
+  assert.match(mainTexts(h, id(1))[0], /AI 中文翻译：[\s\S]*原文：[\s\S]*English photo/);
+  assert.doesNotMatch(mainTexts(h, id(5))[0], /AI 中文翻译/);
+  for (const call of h.accepted.filter((e) => e.method !== 'sendMessage')) {
+    assert.ok(telegramText(call).includes('X链接：'), 'short media carries its original text instead of a separate message');
+    assert.ok(telegramText(call).length <= 1024);
+    if (call.method === 'sendMediaGroup') {
+      assert.ok(JSON.parse(call.fields.media).slice(1).every((item) => item.caption === undefined));
+    }
+  }
   assert.ok(h.accepted.some((e) => e.fields.text?.includes('Quoted context')));
   assert.ok(h.accepted.some((e) => e.fields.text?.includes('Synthetic article preview')));
   assert.equal(h.events.filter((e) => e.type === 'ai').length, 6);
@@ -115,7 +126,8 @@ test('capture I/O failure sends nothing and restart recovers the complete durabl
 test('partial album confirmation retains its pending part and resumes after restart without resending confirmed text', async (t) => {
   const h = await scenario(t);
   h.sources.set('user:alice', [tweet(id(0))]); await h.start(); await h.tick(0);
-  h.sources.set('user:alice', [tweet(id(1), 'alice', { media: [photo(1), photo(2)] }), tweet(id(0))]);
+  h.aiFault = () => ({ body: { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '完整中文相册说明。'.repeat(120) } }] } });
+  h.sources.set('user:alice', [tweet(id(1), 'alice', { text: 'Long album description. '.repeat(50), media: [photo(1), photo(2)] }), tweet(id(0))]);
   h.tgFault = (call) => call.method === 'sendMediaGroup' ? { body: { ok: true, result: [{ message_id: 100 }] } } : undefined;
   await h.tick(); assert.equal(mainTexts(h, id(1)).length, 1); assert.equal(pending(h)[0].delivery.next, 1);
   const ai = h.events.filter((e) => e.type === 'ai').length;
@@ -123,6 +135,40 @@ test('partial album confirmation retains its pending part and resumes after rest
   assert.deepEqual(h.accepted.slice(before).map((e) => e.method), ['sendMediaGroup']);
   assert.equal(mainTexts(h, id(1)).length, 1); assert.equal(pending(h).length, 0);
   assert.equal(h.events.filter((e) => e.type === 'ai').length, ai, 'frozen plan does not repeat translation');
+});
+
+test('long bilingual text survives numbered splitting, Telegram 429 and restart without truncation or confirmed-part replay', async (t) => {
+  const h = await scenario(t);
+  h.sources.set('user:alice', [tweet(id(0))]); await h.start(); await h.tick(0);
+  const original = Array.from({ length: 110 }, (_, n) => `Paragraph ${n}: synthetic English text with emoji 😀 and preserved whitespace.\n\n`).join('');
+  const translated = Array.from({ length: 160 }, (_, n) => `第${n}段：完整保留的中文译文与表情😀，不得省略或重复。\n\n`).join('');
+  h.aiFault = () => ({ body: { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: translated } }] } });
+  h.sources.set('user:alice', [tweet(id(1), 'alice', { text: original, media: [photo(1)] }), tweet(id(0))]);
+  let textAttempts = 0;
+  h.tgFault = (call) => call.method === 'sendMessage' && ++textAttempts === 2
+    ? { status: 429, body: { ok: false, error_code: 429, parameters: { retry_after: 60 } } } : undefined;
+  await h.tick();
+  assert.equal(h.accepted.length, 1);
+  assert.equal(pending(h)[0].delivery.next, 1);
+  const first = telegramText(h.accepted[0]);
+  const attempts = h.events.filter((e) => e.type === 'telegram').length;
+  await h.tick(0);
+  assert.equal(h.events.filter((e) => e.type === 'telegram').length, attempts, 'rate backoff must stop immediate retries');
+  await h.restart(); h.tgFault = null; await h.tick(61000);
+  const texts = h.accepted.filter((e) => e.method === 'sendMessage').map(telegramText);
+  assert.ok(texts.length > 2);
+  for (const [index, text] of texts.entries()) {
+    assert.ok(text.startsWith(`「${index + 1}/${texts.length}」\n`), 'all text chunks carry a consistent sequence');
+    assert.ok(text.length <= 4096 && text.isWellFormed());
+  }
+  const complete = texts.map((text) => text.replace(/^「\d+\/\d+」\n/, '')).join('');
+  assert.ok(complete.endsWith(`\n\nAI 中文翻译：\n${translated.trim()}\n\n原文：\n${original}`), 'all original and translated characters must reach the TLS receiver');
+  assert.doesNotMatch(complete, /内容已截断/);
+  assert.equal(texts.filter((text) => text === first).length, 1, 'confirmed first chunk must not repeat');
+  assert.equal(h.accepted.at(-1).method, 'sendPhoto', 'long-text media follows every text chunk');
+  assert.equal(h.accepted.at(-1).fields.caption, undefined);
+  assert.equal(h.events.filter((e) => e.type === 'ai').length, 1, 'restart uses the frozen translation and plan');
+  assert.equal(pending(h).length, 0);
 });
 
 test('slow real HTTP translation does not block another source or interval and pause cancels stale delivery', async (t) => {

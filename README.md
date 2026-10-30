@@ -1,6 +1,8 @@
 # Tweet Watcher v2
 
-使用 **twscrape 采集 X、通过 Telegram 推送**的中文监控面板。当前版本 **0.2.0-beta.1**，支持账号/回复、List、关键词来源、持续补采和持久媒体投递。本机已部署，并发布 [GitHub 预发布版本](https://github.com/xxvcc/Tweet-Watcher-v2/releases/tag/v0.2.0-beta.1)。默认关闭外部请求，支持独立的只读验证模式。
+使用 **twscrape 采集 X、通过 Telegram 推送**的中文监控面板。当前版本 **0.2.0-beta.2**，支持账号/回复、List、关键词来源、持续补采和持久媒体投递，已发布 [GitHub 预发布版本](https://github.com/xxvcc/Tweet-Watcher-v2/releases/tag/v0.2.0-beta.2)。默认关闭外部请求，支持独立的只读验证模式。
+
+本版新增 Telegram 图文合并与长文分段：短文可与媒体一起发送，长文按顺序完整拆分。运行代码已部署本机；不可变运行快照内的包版本仍为 `0.2.0-beta.1`，本次发布不重启服务。规则与状态兼容见[内容指南](docs/COLLECTION_FEATURES.md#内容与-telegram)，实际运行位置与验证结果见[维护交接](docs/SESSION_HANDOFF.md)和[验证摘要](docs/VERIFICATION.md)。
 
 源自 [Tweet-Watcher v3.5.0](https://github.com/xxvcc/Tweet-Watcher/releases/tag/v3.5.0)，保留历史与 MIT 归属。v2 使用独立目录、凭据、状态与端口。这里的 v2 表示架构代际。
 
